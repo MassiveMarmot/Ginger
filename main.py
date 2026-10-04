@@ -52,31 +52,54 @@ class Window(Adw.ApplicationWindow):
             icon_name="open-menu-symbolic", menu_model=menu,
             tooltip_text="Main Menu"))
 
+        self.main_split = Adw.OverlaySplitView(
+            collapsed=False, show_sidebar=True, min_sidebar_width=250)
+
         self.rules_page = self.build_rules_page()
-        self.add_page = Adw.StatusPage(
+        self.add_page = self.page_with_header(Adw.StatusPage(
             title="Add Rule",
             description="Coming in the next milestone.",
-            icon_name="list-add-symbolic")
+            icon_name="list-add-symbolic"))
 
         self.content_stack = Gtk.Stack(vhomogeneous=False)
         self.content_stack.add_named(self.rules_page, "rules")
         self.content_stack.add_named(self.add_page, "add")
         self.error_page = Adw.StatusPage(icon_name="network-error-symbolic")
+        self.error_wrapper = self.page_with_header(self.error_page)
 
         self.page_stack = Gtk.Stack(vhomogeneous=False)
         self.page_stack.add_named(self.content_stack, "content")
-        self.page_stack.add_named(self.error_page, "error")
+        self.page_stack.add_named(self.error_wrapper, "error")
 
         self.build_sidebar()
+        self.sidebar_rows.select_row(self.sidebar_rows.get_row_at_index(0))
 
-        self.main_split = Adw.OverlaySplitView(
-            collapsed=False, show_sidebar=True, min_sidebar_width=250)
         self.main_split.set_sidebar(sidebar)
         self.main_split.set_content(self.page_stack)
         self.set_content(self.main_split)
 
         self.setup_breakpoints()
         self.on_page_selected(self.sidebar_rows, self.sidebar_rows.get_row_at_index(0))
+
+    def page_with_header(self, page):
+        header = Adw.HeaderBar()
+        header.pack_start(self.make_sidebar_toggle())
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_child(page)
+        view.set_content(scroller)
+        return view
+
+    def make_sidebar_toggle(self):
+        button = Gtk.ToggleButton(
+            icon_name="sidebar-show-symbolic", tooltip_text="Show Sidebar",
+            visible=False)
+        self.main_split.bind_property(
+            "show-sidebar", button, "active",
+            GObject.BindingFlags.BIDIRECTIONAL
+            | GObject.BindingFlags.SYNC_CREATE)
+        return button
 
     def build_sidebar(self):
         self.sidebar_rows.remove_all()
@@ -107,15 +130,11 @@ class Window(Adw.ApplicationWindow):
             "add" if name == "Add Rule" else "rules")
 
     def build_rules_page(self):
-        self.sidebar_toggle = Gtk.ToggleButton(
-            icon_name="sidebar-show-symbolic", tooltip_text="Show Sidebar",
-            visible=False)
-        self.sidebar_toggle.connect("toggled", lambda b: (
-            self.main_split.set_show_sidebar(b.get_active())))
         self.list_header = Adw.HeaderBar()
         self.search_button = Gtk.ToggleButton(
             icon_name="system-search-symbolic", tooltip_text="Search")
         self.search_button.connect("toggled", self.on_search_toggled)
+        self.sidebar_toggle = self.make_sidebar_toggle()
         self.list_header.pack_start(self.sidebar_toggle)
         self.list_header.pack_start(self.search_button)
 
@@ -159,14 +178,15 @@ class Window(Adw.ApplicationWindow):
         scroller2.set_child(self.detail_bin)
         self.detail_pane.set_content(scroller2)
 
-        self.detail_split = Adw.OverlaySplitView(
-            collapsed=False, show_sidebar=True, min_sidebar_width=280)
-        self.detail_split.set_sidebar(list_view)
-        self.detail_split.set_content(self.detail_pane)
-
-        rules_toolbar = Adw.ToolbarView()
-        rules_toolbar.set_content(self.detail_split)
-        return rules_toolbar
+        list_page = Adw.NavigationPage(title="Rules")
+        list_page.set_child(list_view)
+        detail_page = Adw.NavigationPage(title="Rule")
+        detail_page.set_child(self.detail_pane)
+        self.detail_split = Adw.NavigationSplitView(
+            sidebar_width_fraction=0.5)
+        self.detail_split.set_sidebar(list_page)
+        self.detail_split.set_content(detail_page)
+        return self.detail_split
 
     def build_filter_panel(self):
         self.filter_list = Gtk.ListBox(css_classes=["boxed-list"])
@@ -185,12 +205,13 @@ class Window(Adw.ApplicationWindow):
         return view
 
     def on_filter_row(self, box, row):
-        if row.snap_name in self.filter_snaps:
-            self.filter_snaps.discard(row.snap_name)
-            row.check.set_active(False)
+        row.check.set_active(not row.check.get_active())
+
+    def on_filter_check_toggled(self, check, snap_name):
+        if check.get_active():
+            self.filter_snaps.add(snap_name)
         else:
-            self.filter_snaps.add(row.snap_name)
-            row.check.set_active(True)
+            self.filter_snaps.discard(snap_name)
         self.refresh_list()
 
     def on_filter_toggled(self, button):
@@ -212,13 +233,18 @@ class Window(Adw.ApplicationWindow):
         self.select_mode = button.get_active()
         self.refresh_list()
 
+    @staticmethod
+    def rule_constraints(rule):
+        c = rule.get("constraints")
+        return c if isinstance(c, dict) else {}
+
     def visible_rules(self):
         out = []
         for rule in self.rules:
             if not isinstance(rule, dict):
                 continue
             snap = str(rule.get("snap") or "")
-            pattern = str((rule.get("constraints") or {}).get(
+            pattern = str(self.rule_constraints(rule).get(
                 "path-pattern") or "")
             if self.query and self.query.lower() not in snap.lower() \
                     and self.query.lower() not in pattern.lower():
@@ -228,22 +254,24 @@ class Window(Adw.ApplicationWindow):
             out.append(rule)
         return out
 
-    def refresh_list(self):
-        self.rules_list.remove_all()
-        visible = self.visible_rules()
-        for rule in visible:
-            self.rules_list.append(self.rule_row(rule))
+    def update_select_title(self):
         if self.select_mode:
+            visible = self.visible_rules()
             count = sum(1 for r in visible
                         if str(r.get("id")) in self.selected_ids)
             self.list_title.set_label("%d Selected" % count)
         else:
             self.list_title.set_label("Rules")
+
+    def refresh_list(self):
+        self.rules_list.remove_all()
+        for rule in self.visible_rules():
+            self.rules_list.append(self.rule_row(rule))
+        self.update_select_title()
         self.update_detail()
 
     def rule_row(self, rule):
-        constraints = rule.get("constraints")
-        constraints = constraints if isinstance(constraints, dict) else {}
+        constraints = self.rule_constraints(rule)
         perms = constraints.get("permissions")
         perms = perms if isinstance(perms, dict) else {}
         subtitle = "  ".join(
@@ -262,9 +290,9 @@ class Window(Adw.ApplicationWindow):
                          css_classes=["caption"], use_markup=False)
         row.add_suffix(info)
         if self.select_mode:
-            check = Gtk.CheckButton(css_classes=["circular"])
-            check.connect("toggled", self.on_row_checked, str(rule.get("id")))
+            check = Gtk.CheckButton(css_classes=["selection-mode"])
             check.set_active(str(rule.get("id")) in self.selected_ids)
+            check.connect("toggled", self.on_row_checked, str(rule.get("id")))
             row.add_suffix(check)
         return row
 
@@ -273,7 +301,7 @@ class Window(Adw.ApplicationWindow):
             self.selected_ids.add(rule_id)
         else:
             self.selected_ids.discard(rule_id)
-        self.refresh_list()
+        self.update_select_title()
 
     def on_rule_selected(self, box, row):
         if row is None or not hasattr(row, "rule"):
@@ -288,8 +316,7 @@ class Window(Adw.ApplicationWindow):
                 title="No rule selected",
                 icon_name="document-open-symbolic"))
             return
-        constraints = rule.get("constraints")
-        constraints = constraints if isinstance(constraints, dict) else {}
+        constraints = self.rule_constraints(rule)
         pattern = str(constraints.get("path-pattern") or "?")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
                       margin_top=24, margin_bottom=24,
@@ -356,7 +383,9 @@ class Window(Adw.ApplicationWindow):
                                 "dialog-warning-symbolic")
             return
         self.rules = [r for r in rules if isinstance(r, dict)]
-        self.selected_rule = None
+        selected_id = str((self.selected_rule or {}).get("id") or "")
+        self.selected_rule = next(
+            (r for r in self.rules if str(r.get("id")) == selected_id), None)
         self.filter_snaps = set()
         self.select_mode = False
         self.selected_ids = set()
@@ -371,7 +400,9 @@ class Window(Adw.ApplicationWindow):
                             for r in self.rules}):
             row = Gtk.ListBoxRow()
             row.snap_name = snap
-            check = Gtk.CheckButton(css_classes=["circular"])
+            check = Gtk.CheckButton(css_classes=["selection-mode"])
+            check.set_active(snap in self.filter_snaps)
+            check.connect("toggled", self.on_filter_check_toggled, snap)
             row.check = check
             box = Gtk.Box(margin_top=12, margin_bottom=12,
                           margin_start=6, margin_end=6, spacing=12)
@@ -392,9 +423,6 @@ class Window(Adw.ApplicationWindow):
             "max-width: 600"))
         b2.add_setter(self.detail_split, "collapsed", True)
         self.add_breakpoint(b2)
-        self.main_split.bind_property(
-            "show-sidebar", self.sidebar_toggle, "active",
-            GObject.BindingFlags.BIDIRECTIONAL)
 
 
 class App(Adw.Application):

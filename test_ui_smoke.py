@@ -81,8 +81,8 @@ class UISmokeTests(unittest.TestCase):
         win.on_page_selected(win.sidebar_rows,
                              win.sidebar_rows.get_row_at_index(1))
         self.assertEqual(win.content_stack.get_visible_child_name(), "add")
-        page = win.add_page
-        self.assertIn("next milestone", page.get_description())
+        texts = [l.get_text() for l in self.find_labels(win.add_page, [])]
+        self.assertTrue(any("next milestone" in t for t in texts))
 
     def test_rules_one_row_per_rule(self):
         self.server.rules = [dict(RULE), dict(RULE, snap="thunderbird", id="2")]
@@ -233,6 +233,58 @@ class UISmokeTests(unittest.TestCase):
         images = [w for w in self.walk(row) if isinstance(w, Gtk.Image)
                   if w.get_icon_name() == "dialog-warning-symbolic"]
         self.assertEqual(len(images), 1)
+
+    def test_filter_check_click_updates_filter(self):
+        self.server.rules = [dict(RULE), dict(RULE, snap="thunderbird", id="2")]
+        win = self.make_window()
+        row = win.filter_list.get_row_at_index(0)
+        self.assertEqual(row.snap_name, "firefox")
+        row.check.set_active(True)
+        self.assertEqual(win.filter_snaps, {"firefox"})
+        self.assertEqual(len(self.row_label_texts(win)), 1)
+        row.check.set_active(False)
+        self.assertEqual(win.filter_snaps, set())
+        self.assertEqual(len(self.row_label_texts(win)), 2)
+
+    def test_filter_row_activation_toggles_check(self):
+        self.server.rules = [dict(RULE)]
+        win = self.make_window()
+        row = win.filter_list.get_row_at_index(0)
+        win.on_filter_row(win.filter_list, row)
+        self.assertTrue(row.check.get_active())
+        self.assertEqual(win.filter_snaps, {"firefox"})
+
+    def test_select_check_toggle_no_recursion(self):
+        import sys as _sys
+        self.server.rules = [dict(RULE)]
+        win = self.make_window()
+        self.select_button_flip(win)
+        row = win.rules_list.get_row_at_index(0)
+        checks = [w for w in self.walk(row)
+                  if isinstance(w, Gtk.CheckButton)]
+        checks[0].set_active(True)
+        self.assertEqual(win.selected_ids, {"1"})
+        self.assertEqual(win.list_title.get_text(), "1 Selected")
+        checks[0].set_active(False)
+        self.assertEqual(win.selected_ids, set())
+        self.assertEqual(win.list_title.get_text(), "0 Selected")
+
+    def test_sidebar_toggle_binding_initial_state(self):
+        win = self.main.Window(self.app)
+        win.present()
+        self.assertTrue(win.main_split.get_show_sidebar())
+        self.assertTrue(win.sidebar_toggle.get_active())
+        self.assertTrue(win.list_header is not None)
+
+    def test_selection_preserved_across_refresh(self):
+        self.server.rules = [dict(RULE), dict(RULE, snap="thunderbird", id="2")]
+        win = self.make_window()
+        win.on_rule_selected(win.rules_list,
+                             win.rules_list.get_row_at_index(1))
+        self.assertEqual(str(win.selected_rule.get("id")), "2")
+        win.activate_action("win.refresh", None)
+        self.assertIsNotNone(win.selected_rule)
+        self.assertEqual(str(win.selected_rule.get("id")), "2")
 
     def test_collapsed_sidebar_toggle_reopens(self):
         win = self.make_window()
