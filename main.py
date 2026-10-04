@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 import sys
 
 import gi
@@ -20,11 +21,10 @@ class Window(Adw.ApplicationWindow):
                          default_width=921, default_height=450)
         self.client = Client()
         self.rules = []
-        self.selected_rule = None
+        self.snaps = []
+        self.selected_snap = None
         self.query = ""
-        self.filter_snaps = set()
-        self.select_mode = False
-        self.selected_ids = set()
+        self.only_with_rules = False
 
         self.sidebar_rows = Gtk.ListBox(css_classes=["navigation-sidebar"])
         self.sidebar_rows.connect("row-activated", self.on_page_selected)
@@ -55,20 +55,12 @@ class Window(Adw.ApplicationWindow):
         self.main_split = Adw.OverlaySplitView(
             collapsed=False, show_sidebar=True, min_sidebar_width=250)
 
-        self.rules_page = self.build_rules_page()
-        self.add_page = self.page_with_header(Adw.StatusPage(
-            title="Add Rule",
-            description="Coming in the next milestone.",
-            icon_name="list-add-symbolic"))
-
-        self.content_stack = Gtk.Stack(vhomogeneous=False)
-        self.content_stack.add_named(self.rules_page, "rules")
-        self.content_stack.add_named(self.add_page, "add")
+        self.snaps_page = self.build_snaps_page()
         self.error_page = Adw.StatusPage(icon_name="network-error-symbolic")
         self.error_wrapper = self.page_with_header(self.error_page)
 
         self.page_stack = Gtk.Stack(vhomogeneous=False)
-        self.page_stack.add_named(self.content_stack, "content")
+        self.page_stack.add_named(self.snaps_page, "snaps")
         self.page_stack.add_named(self.error_wrapper, "error")
 
         self.build_sidebar()
@@ -79,7 +71,8 @@ class Window(Adw.ApplicationWindow):
         self.set_content(self.main_split)
 
         self.setup_breakpoints()
-        self.on_page_selected(self.sidebar_rows, self.sidebar_rows.get_row_at_index(0))
+        self.on_page_selected(self.sidebar_rows,
+                              self.sidebar_rows.get_row_at_index(0))
 
     def page_with_header(self, page):
         header = Adw.HeaderBar()
@@ -105,8 +98,7 @@ class Window(Adw.ApplicationWindow):
 
     def build_sidebar(self):
         self.sidebar_rows.remove_all()
-        for name, icon in (("Rules", "emblem-default-symbolic"),
-                           ("Add Rule", "list-add-symbolic")):
+        for name, icon in (("Snaps", "application-x-executable-symbolic"),):
             row = Gtk.ListBoxRow()
             row.page_name = name
             box = Gtk.Box(margin_top=12, margin_bottom=12,
@@ -126,12 +118,43 @@ class Window(Adw.ApplicationWindow):
     def on_page_selected(self, box, row):
         if self.main_split.get_collapsed():
             self.main_split.set_show_sidebar(False)
-        name = row.page_name if row else "Rules"
-        self.page_stack.set_visible_child_name("content")
-        self.content_stack.set_visible_child_name(
-            "add" if name == "Add Rule" else "rules")
+        self.page_stack.set_visible_child_name("snaps")
 
-    def build_rules_page(self):
+    @staticmethod
+    def rule_constraints(rule):
+        c = rule.get("constraints")
+        return c if isinstance(c, dict) else {}
+
+    def rules_by_snap(self):
+        grouped = {}
+        for rule in self.rules:
+            if isinstance(rule, dict):
+                grouped.setdefault(str(rule.get("snap") or "unknown"),
+                                   []).append(rule)
+        return grouped
+
+    def snap_names(self):
+        grouped = self.rules_by_snap()
+        names = {}
+        for s in self.snaps:
+            if isinstance(s, dict) and s.get("type") in (None, "app"):
+                names[str(s.get("name") or "?")] = s
+        for name in grouped:
+            if name not in names:
+                names[name] = {"name": name, "not_installed": True}
+        return names
+
+    def visible_snaps(self):
+        out = []
+        for name in sorted(self.snap_names()):
+            if self.query and self.query.lower() not in name.lower():
+                continue
+            if self.only_with_rules and name not in self.rules_by_snap():
+                continue
+            out.append(name)
+        return out
+
+    def build_snaps_page(self):
         self.list_header = Adw.HeaderBar()
         self.search_button = Gtk.ToggleButton(
             icon_name="system-search-symbolic", tooltip_text="Search")
@@ -141,25 +164,21 @@ class Window(Adw.ApplicationWindow):
         self.list_header.pack_start(self.search_button)
 
         self.list_title = Gtk.Label(
-            label="Rules", css_classes=["heading"], hexpand=True)
+            label="Snaps", css_classes=["heading"], hexpand=True)
         self.list_header.set_title_widget(self.list_title)
 
-        self.select_button = Gtk.ToggleButton(
-            icon_name="object-select-symbolic", tooltip_text="Select")
-        self.select_button.connect("toggled", self.on_select_toggled)
         self.filter_button = Gtk.ToggleButton(
             icon_name="funnel-symbolic", tooltip_text="Filter")
         self.filter_button.connect("toggled", self.on_filter_toggled)
         self.list_header.pack_end(self.filter_button)
-        self.list_header.pack_end(self.select_button)
 
         self.search_bar = Gtk.SearchBar(hexpand=True)
         self.search_entry = Gtk.SearchEntry(hexpand=True)
         self.search_entry.connect("search-changed", self.on_search_changed)
         self.search_bar.set_child(self.search_entry)
 
-        self.rules_list = Gtk.ListBox(css_classes=["boxed-list"])
-        self.rules_list.connect("row-activated", self.on_rule_selected)
+        self.snaps_list = Gtk.ListBox(css_classes=["boxed-list"])
+        self.snaps_list.connect("row-activated", self.on_snap_selected)
 
         self.filter_panel = self.build_filter_panel()
 
@@ -168,7 +187,7 @@ class Window(Adw.ApplicationWindow):
         list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         list_box.append(self.search_bar)
         scroller = Gtk.ScrolledWindow()
-        scroller.set_child(self.rules_list)
+        scroller.set_child(self.snaps_list)
         list_box.append(scroller)
         list_view.set_content(list_box)
 
@@ -180,9 +199,9 @@ class Window(Adw.ApplicationWindow):
         scroller2.set_child(self.detail_bin)
         self.detail_pane.set_content(scroller2)
 
-        list_page = Adw.NavigationPage(title="Rules")
+        list_page = Adw.NavigationPage(title="Snaps")
         list_page.set_child(list_view)
-        self.detail_page = Adw.NavigationPage(title="Rule")
+        self.detail_page = Adw.NavigationPage(title="Snap")
         self.detail_page.set_child(self.detail_pane)
         self.detail_split = Adw.NavigationSplitView(
             sidebar_width_fraction=0.5)
@@ -191,29 +210,25 @@ class Window(Adw.ApplicationWindow):
         return self.detail_split
 
     def build_filter_panel(self):
-        self.filter_list = Gtk.ListBox(css_classes=["boxed-list"])
-        self.filter_list.connect("row-activated", self.on_filter_row)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
-                      margin_top=12, margin_bottom=12,
-                      margin_start=12, margin_end=12)
-        box.append(Gtk.Label(label="Filter by snap", css_classes=["heading"]))
-        box.append(self.filter_list)
-        scroller = Gtk.ScrolledWindow()
-        scroller.set_child(box)
+        check = Gtk.CheckButton(css_classes=["selection-mode"])
+        check.connect("toggled", self.on_filter_check_toggled)
+        row = Adw.ActionRow(title="Only snaps with rules",
+                            use_markup=False)
+        row.add_suffix(check)
+        row.set_activatable_widget(check)
+        group = Adw.PreferencesGroup()
+        group.add(row)
+        self.filter_check = check
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
         view.add_top_bar(header)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_child(group)
         view.set_content(scroller)
         return view
 
-    def on_filter_row(self, box, row):
-        row.check.set_active(not row.check.get_active())
-
-    def on_filter_check_toggled(self, check, snap_name):
-        if check.get_active():
-            self.filter_snaps.add(snap_name)
-        else:
-            self.filter_snaps.discard(snap_name)
+    def on_filter_check_toggled(self, check):
+        self.only_with_rules = check.get_active()
         self.refresh_list()
 
     def on_filter_toggled(self, button):
@@ -231,108 +246,60 @@ class Window(Adw.ApplicationWindow):
         self.query = entry.get_text()
         self.refresh_list()
 
-    def on_select_toggled(self, button):
-        self.select_mode = button.get_active()
-        self.refresh_list()
-
-    @staticmethod
-    def rule_constraints(rule):
-        c = rule.get("constraints")
-        return c if isinstance(c, dict) else {}
-
-    def visible_rules(self):
-        out = []
-        for rule in self.rules:
-            if not isinstance(rule, dict):
-                continue
-            snap = str(rule.get("snap") or "")
-            pattern = str(self.rule_constraints(rule).get(
-                "path-pattern") or "")
-            if self.query and self.query.lower() not in snap.lower() \
-                    and self.query.lower() not in pattern.lower():
-                continue
-            if self.filter_snaps and snap not in self.filter_snaps:
-                continue
-            out.append(rule)
-        return out
-
-    def update_select_title(self):
-        if self.select_mode:
-            visible = self.visible_rules()
-            count = sum(1 for r in visible
-                        if str(r.get("id")) in self.selected_ids)
-            self.list_title.set_label("%d Selected" % count)
-        else:
-            self.list_title.set_label("Rules")
-
-    def highlight_selected_row(self):
-        selected_id = str((self.selected_rule or {}).get("id") or "")
-        for i in range(1000):
-            row = self.rules_list.get_row_at_index(i)
-            if row is None:
-                return
-            if str(row.rule.get("id") or "") == selected_id:
-                self.rules_list.select_row(row)
-                return
-
     def refresh_list(self):
-        self.rules_list.remove_all()
-        for rule in self.visible_rules():
-            self.rules_list.append(self.rule_row(rule))
-        self.update_select_title()
+        self.snaps_list.remove_all()
+        for name in self.visible_snaps():
+            self.snaps_list.append(self.snap_row(name))
         self.update_detail()
         self.highlight_selected_row()
 
-    def rule_row(self, rule):
-        constraints = self.rule_constraints(rule)
-        perms = constraints.get("permissions")
-        perms = perms if isinstance(perms, dict) else {}
-        subtitle = "  ".join(
-            "%s: %s / %s" % (name, spec.get("outcome"), spec.get("lifespan"))
-            for name, spec in perms.items() if isinstance(spec, dict))
-        row = Adw.ActionRow(title=str(rule.get("snap") or "?"),
-                            subtitle=str(constraints.get("path-pattern")
-                                         or "?"), use_markup=False)
-        row.rule = rule
+    def snap_row(self, name):
+        snap = self.snap_names().get(name, {})
+        rules = self.rules_by_snap().get(name, [])
+        count = len(rules)
+        subtitle = "%d rules" % count if count else "No rules"
+        if snap.get("not_installed"):
+            subtitle += " · Not installed"
+        row = Adw.ActionRow(title=name, subtitle=subtitle, use_markup=False)
+        row.snap_name = name
         row.add_prefix(Gtk.Image(icon_name="application-x-executable-symbolic"))
-        if is_broad_pattern(str(constraints.get("path-pattern") or "")):
+        if any(is_broad_pattern(
+                str(self.rule_constraints(r).get("path-pattern") or ""))
+               for r in rules):
             row.add_suffix(Gtk.Image(
                 icon_name="dialog-warning-symbolic",
                 tooltip_text="Broad pattern"))
-        info = Gtk.Label(label=subtitle or "no permissions",
-                         css_classes=["caption"], use_markup=False)
-        row.add_suffix(info)
-        if self.select_mode:
-            check = Gtk.CheckButton(css_classes=["selection-mode"])
-            check.set_active(str(rule.get("id")) in self.selected_ids)
-            check.connect("toggled", self.on_row_checked, str(rule.get("id")))
-            row.add_suffix(check)
         return row
 
-    def on_row_checked(self, check, rule_id):
-        if check.get_active():
-            self.selected_ids.add(rule_id)
-        else:
-            self.selected_ids.discard(rule_id)
-        self.update_select_title()
+    def highlight_selected_row(self):
+        selected = self.selected_snap
+        for i in range(1000):
+            row = self.snaps_list.get_row_at_index(i)
+            if row is None:
+                return
+            if row.snap_name == selected:
+                self.snaps_list.select_row(row)
+                return
 
-    def on_rule_selected(self, box, row):
-        if row is None or not hasattr(row, "rule"):
+    def on_snap_selected(self, box, row):
+        if row is None or not hasattr(row, "snap_name"):
             return
-        self.selected_rule = row.rule
+        self.selected_snap = row.snap_name
+        if self.filter_button.get_active():
+            self.filter_button.set_active(False)
         self.detail_split.set_show_content(True)
         self.update_detail()
         self.highlight_selected_row()
 
     def update_detail(self):
-        rule = self.selected_rule
-        if not isinstance(rule, dict):
+        snap = self.snap_names().get(self.selected_snap)
+        if snap is None:
             self.detail_bin.set_child(Adw.StatusPage(
-                title="No rule selected",
+                title="No snap selected",
                 icon_name="document-open-symbolic"))
             return
-        constraints = self.rule_constraints(rule)
-        pattern = str(constraints.get("path-pattern") or "?")
+        name = self.selected_snap
+        rules = self.rules_by_snap().get(name, [])
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
                       margin_top=24, margin_bottom=24,
                       margin_start=12, margin_end=12,
@@ -340,39 +307,71 @@ class Window(Adw.ApplicationWindow):
         box.append(Gtk.Image(
             icon_name="application-x-executable-symbolic",
             pixel_size=96, valign=Gtk.Align.START))
-        name = Gtk.Label(css_classes=["title-2"], use_markup=False)
-        name.set_text(str(rule.get("snap") or "?"))
-        box.append(name)
-        box.append(Gtk.Label(label=pattern, css_classes=["dim-label"],
-                             use_markup=False))
+        title = Gtk.Label(css_classes=["title-2"], use_markup=False)
+        title.set_text(name)
+        box.append(title)
+        if snap.get("summary"):
+            summary = Gtk.Label(css_classes=["dim-label"],
+                                ellipsize=True, use_markup=False)
+            summary.set_text(str(snap.get("summary")))
+            box.append(summary)
+        add_button = Gtk.Button(label="Add Rule",
+                                css_classes=["suggested-action", "pill"])
+        add_button.set_valign(Gtk.Align.CENTER)
+        box.append(add_button)
         card = Adw.PreferencesGroup()
-        for label_text, value in (
-                ("Rule id", str(rule.get("id") or "?")),
-                ("Interface", str(rule.get("interface") or "?")),
-                ("Path pattern", pattern)):
-            row = Adw.ActionRow(title=label_text, subtitle=value,
-                                use_markup=False)
-            copy = Gtk.Button(icon_name="edit-copy-symbolic",
-                              css_classes=["flat"])
-            copy.connect("clicked", self.copy_text, value)
-            row.add_suffix(copy)
-            row.set_activatable_widget(copy)
-            card.add(row)
+        snap_name_row = Adw.ActionRow(title="Snap name", use_markup=False,
+                                      css_classes=["property"])
+        value = Gtk.Label(use_markup=False, halign=Gtk.Align.START)
+        value.set_text(name)
+        snap_name_row.add_suffix(value)
+        copy = Gtk.Button(icon_name="edit-copy-symbolic",
+                          css_classes=["flat"])
+        copy.connect("clicked", self.copy_text, name)
+        snap_name_row.add_suffix(copy)
+        snap_name_row.set_activatable_widget(copy)
+        card.add(snap_name_row)
+        if snap.get("version"):
+            version_row = Adw.ActionRow(
+                title="Version", use_markup=False,
+                css_classes=["property"])
+            vlabel = Gtk.Label(use_markup=False, halign=Gtk.Align.START)
+            vlabel.set_text(str(snap.get("version")))
+            version_row.add_suffix(vlabel)
+            card.add(version_row)
+        rules_row = Adw.ActionRow(
+            title="Rules", subtitle="%d" % len(rules), use_markup=False,
+            css_classes=["property"])
+        card.add(rules_row)
         box.append(card)
-        perms = constraints.get("permissions")
-        perms = perms if isinstance(perms, dict) else {}
-        for name_, spec in perms.items():
-            spec = spec if isinstance(spec, dict) else {}
-            expander = Adw.ExpanderRow(
-                title=name_, subtitle="%s / %s" % (
-                    spec.get("outcome"), spec.get("lifespan")),
-                use_markup=False)
-            for k in ("expiration", "session-id"):
-                if spec.get(k):
-                    expander.add_row(Adw.ActionRow(
-                        title=k, subtitle=str(spec[k]), use_markup=False))
-            card.add(expander)
+        perms_card = Adw.PreferencesGroup(
+            title=GLib.markup_escape_text("Path permissions"))
+        if rules:
+            for rule in rules:
+                perms_card.add(self.permission_row(rule))
+        else:
+            perms_card.add(Adw.ActionRow(
+                title="No path permissions", use_markup=False))
+        box.append(perms_card)
         self.detail_bin.set_child(box)
+
+    def permission_row(self, rule):
+        pattern = str(self.rule_constraints(rule).get("path-pattern") or "?")
+        perms = self.rule_constraints(rule).get("permissions")
+        perms = perms if isinstance(perms, dict) else {}
+        subtitle = "  ".join(
+            "%s: %s / %s" % (n, s.get("outcome"), s.get("lifespan"))
+            for n, s in perms.items() if isinstance(s, dict))
+        row = Adw.ActionRow(title=pattern, subtitle=subtitle or "no permissions",
+                            use_markup=False)
+        if is_broad_pattern(pattern):
+            row.add_suffix(Gtk.Image(
+                icon_name="dialog-warning-symbolic",
+                tooltip_text="Broad pattern"))
+        trash = Gtk.Button(icon_name="user-trash-symbolic",
+                           css_classes=["flat"])
+        row.add_suffix(trash)
+        return row
 
     def copy_text(self, button, text):
         self.get_clipboard().set_text(text)
@@ -386,6 +385,7 @@ class Window(Adw.ApplicationWindow):
     def load(self):
         try:
             rules = self.client.list_rules()
+            snaps = self.client.list_snaps()
         except SnapdError as e:
             if e.kind == PROMPTING_NOT_RUNNING:
                 self.show_error("AppArmor prompting is not enabled",
@@ -398,37 +398,13 @@ class Window(Adw.ApplicationWindow):
                                 "dialog-warning-symbolic")
             return
         self.rules = [r for r in rules if isinstance(r, dict)]
-        selected_id = str((self.selected_rule or {}).get("id") or "")
-        self.selected_rule = next(
-            (r for r in self.rules if str(r.get("id")) == selected_id), None)
-        live_snaps = {str(r.get("snap") or "unknown") for r in self.rules}
-        self.filter_snaps &= live_snaps
+        self.snaps = [s for s in snaps if isinstance(s, dict)]
+        if self.selected_snap not in self.snap_names():
+            self.selected_snap = None
         if self.search_entry.get_text() != self.query:
             self.search_entry.set_text(self.query)
-        self.select_mode = False
-        self.selected_ids = set()
-        self.select_button.set_active(False)
-        self.rebuild_filter_panel()
-        self.page_stack.set_visible_child_name("content")
+        self.page_stack.set_visible_child_name("snaps")
         self.refresh_list()
-
-    def rebuild_filter_panel(self):
-        self.filter_list.remove_all()
-        for snap in sorted({str(r.get("snap") or "unknown")
-                            for r in self.rules}):
-            row = Gtk.ListBoxRow()
-            row.snap_name = snap
-            check = Gtk.CheckButton(css_classes=["selection-mode"])
-            check.set_active(snap in self.filter_snaps)
-            check.connect("toggled", self.on_filter_check_toggled, snap)
-            row.check = check
-            box = Gtk.Box(margin_top=12, margin_bottom=12,
-                          margin_start=6, margin_end=6, spacing=12)
-            box.append(Gtk.Label(label=snap, xalign=0, hexpand=True,
-                                 use_markup=False))
-            box.append(check)
-            row.set_child(box)
-            self.filter_list.append(row)
 
     def setup_breakpoints(self):
         b1 = Adw.Breakpoint(condition=Adw.BreakpointCondition.parse(

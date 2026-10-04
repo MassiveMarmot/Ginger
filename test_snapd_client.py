@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 import json
 import os
 import pwd
@@ -28,6 +29,7 @@ class MockSnapd:
     def __init__(self, socket_path):
         self.socket_path = socket_path
         self.rules = []
+        self.snaps = []
         self.responses = []  # (status, body) overrides, consumed in order
         self.running = True
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -84,6 +86,9 @@ class MockSnapd:
             self.rules.append(rule)
             status, payload = 200, {"type": "sync", "status-code": 200,
                                     "result": rule}
+        elif method == "GET" and path == "/v2/snaps":
+            status, payload = 200, {"type": "sync", "status-code": 200,
+                                    "result": self.snaps}
         elif method == "POST" and path.startswith("/v2/interfaces/requests/rules/"):
             self.rules = [r for r in self.rules
                           if r["id"] != path.rsplit("/", 1)[1]]
@@ -153,6 +158,14 @@ class SnapdClientTests(unittest.TestCase):
         with self.assertRaises(SnapdError) as ctx:
             self.client.list_rules()
         self.assertEqual(ctx.exception.kind, PROMPTING_NOT_RUNNING)
+
+    def test_list_snaps(self):
+        self.server.snaps = [{"name": "firefox", "type": "app",
+                              "version": "1.0", "summary": "browser"},
+                             {"name": "core24", "type": "base"}]
+        snaps = self.client.list_snaps()
+        self.assertEqual(len(snaps), 2)
+        self.assertEqual(snaps[0]["name"], "firefox")
 
     def test_connection_failure(self):
         bad = Client(socket_path=os.path.join(self.tmpdir.name, "missing.socket"))

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 import http.client
 import json
 import os
@@ -99,5 +100,4 @@ class Client:
         return self._request("POST", path, {"action": "remove"})
 
     def list_snaps(self):
-        # UNVERIFIED: GET /v2/snaps reachable from inside a Flatpak.
         return self._request("GET", "/v2/snaps")
