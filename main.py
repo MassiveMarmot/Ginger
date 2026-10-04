@@ -32,7 +32,7 @@ class Window(Adw.ApplicationWindow):
         sidebar = Adw.ToolbarView()
         sidebar_header = Adw.HeaderBar()
         sidebar.add_top_bar(sidebar_header)
-        scroller = Gtk.ScrolledWindow()
+        scroller = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
         scroller.set_child(self.sidebar_rows)
         sidebar.set_content(scroller)
 
@@ -177,7 +177,8 @@ class Window(Adw.ApplicationWindow):
         self.search_entry.connect("search-changed", self.on_search_changed)
         self.search_bar.set_child(self.search_entry)
 
-        self.snaps_list = Gtk.ListBox(css_classes=["boxed-list"])
+        self.snaps_list = Gtk.ListBox(css_classes=["boxed-list"],
+                                      activate_on_single_click=True)
         self.snaps_list.connect("row-activated", self.on_snap_selected)
 
         self.filter_panel = self.build_filter_panel()
@@ -186,7 +187,7 @@ class Window(Adw.ApplicationWindow):
         list_view.add_top_bar(self.list_header)
         list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         list_box.append(self.search_bar)
-        scroller = Gtk.ScrolledWindow()
+        scroller = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
         scroller.set_child(self.snaps_list)
         list_box.append(scroller)
         list_view.set_content(list_box)
@@ -195,7 +196,7 @@ class Window(Adw.ApplicationWindow):
         detail_header = Adw.HeaderBar()
         self.detail_pane.add_top_bar(detail_header)
         self.detail_bin = Adw.Bin()
-        scroller2 = Gtk.ScrolledWindow()
+        scroller2 = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
         scroller2.set_child(self.detail_bin)
         self.detail_pane.set_content(scroller2)
 
