@@ -93,12 +93,14 @@ class Window(Adw.ApplicationWindow):
 
     def make_sidebar_toggle(self):
         button = Gtk.ToggleButton(
-            icon_name="sidebar-show-symbolic", tooltip_text="Show Sidebar",
-            visible=False)
+            icon_name="sidebar-show-symbolic", tooltip_text="Show Sidebar")
         self.main_split.bind_property(
             "show-sidebar", button, "active",
             GObject.BindingFlags.BIDIRECTIONAL
             | GObject.BindingFlags.SYNC_CREATE)
+        self.main_split.bind_property(
+            "collapsed", button, "visible",
+            GObject.BindingFlags.SYNC_CREATE)
         return button
 
     def build_sidebar(self):
@@ -180,12 +182,12 @@ class Window(Adw.ApplicationWindow):
 
         list_page = Adw.NavigationPage(title="Rules")
         list_page.set_child(list_view)
-        detail_page = Adw.NavigationPage(title="Rule")
-        detail_page.set_child(self.detail_pane)
+        self.detail_page = Adw.NavigationPage(title="Rule")
+        self.detail_page.set_child(self.detail_pane)
         self.detail_split = Adw.NavigationSplitView(
             sidebar_width_fraction=0.5)
         self.detail_split.set_sidebar(list_page)
-        self.detail_split.set_content(detail_page)
+        self.detail_split.set_content(self.detail_page)
         return self.detail_split
 
     def build_filter_panel(self):
@@ -216,10 +218,8 @@ class Window(Adw.ApplicationWindow):
 
     def on_filter_toggled(self, button):
         active = button.get_active()
-        if active:
-            self.detail_split.set_content(self.filter_panel)
-        else:
-            self.detail_split.set_content(self.detail_pane)
+        self.detail_page.set_child(
+            self.filter_panel if active else self.detail_pane)
         self.refresh_list()
 
     def on_search_toggled(self, button):
@@ -263,12 +263,23 @@ class Window(Adw.ApplicationWindow):
         else:
             self.list_title.set_label("Rules")
 
+    def highlight_selected_row(self):
+        selected_id = str((self.selected_rule or {}).get("id") or "")
+        for i in range(1000):
+            row = self.rules_list.get_row_at_index(i)
+            if row is None:
+                return
+            if str(row.rule.get("id") or "") == selected_id:
+                self.rules_list.select_row(row)
+                return
+
     def refresh_list(self):
         self.rules_list.remove_all()
         for rule in self.visible_rules():
             self.rules_list.append(self.rule_row(rule))
         self.update_select_title()
         self.update_detail()
+        self.highlight_selected_row()
 
     def rule_row(self, rule):
         constraints = self.rule_constraints(rule)
@@ -307,7 +318,9 @@ class Window(Adw.ApplicationWindow):
         if row is None or not hasattr(row, "rule"):
             return
         self.selected_rule = row.rule
+        self.detail_split.set_show_content(True)
         self.update_detail()
+        self.highlight_selected_row()
 
     def update_detail(self):
         rule = self.selected_rule
@@ -387,6 +400,7 @@ class Window(Adw.ApplicationWindow):
         self.selected_rule = next(
             (r for r in self.rules if str(r.get("id")) == selected_id), None)
         self.filter_snaps = set()
+        self.search_entry.set_text(self.query)
         self.select_mode = False
         self.selected_ids = set()
         self.select_button.set_active(False)
@@ -417,7 +431,6 @@ class Window(Adw.ApplicationWindow):
             "max-width: 865"))
         b1.add_setter(self.main_split, "collapsed", True)
         b1.add_setter(self.main_split, "max-sidebar-width", 280)
-        b1.add_setter(self.sidebar_toggle, "visible", True)
         self.add_breakpoint(b1)
         b2 = Adw.Breakpoint(condition=Adw.BreakpointCondition.parse(
             "max-width: 600"))

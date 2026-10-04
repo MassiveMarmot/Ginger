@@ -43,14 +43,15 @@ class UISmokeTests(unittest.TestCase):
             app.register()
         self.server.rules = []
         self.server.responses = []
+        self.win = self.main.Window(self.app)
+        self.win.present()
+
+    def tearDown(self):
+        self.win.destroy()
 
     def make_window(self):
-        win = self.app.props.active_window
-        if not win:
-            win = self.main.Window(self.app)
-            win.present()
-        win.load()
-        return win
+        self.win.load()
+        return self.win
 
     def find_labels(self, widget, out):
         if isinstance(widget, Gtk.Label):
@@ -274,7 +275,8 @@ class UISmokeTests(unittest.TestCase):
         win.present()
         self.assertTrue(win.main_split.get_show_sidebar())
         self.assertTrue(win.sidebar_toggle.get_active())
-        self.assertTrue(win.list_header is not None)
+        self.assertFalse(win.sidebar_toggle.get_visible())
+        win.destroy()
 
     def test_selection_preserved_across_refresh(self):
         self.server.rules = [dict(RULE), dict(RULE, snap="thunderbird", id="2")]
@@ -285,6 +287,33 @@ class UISmokeTests(unittest.TestCase):
         win.activate_action("win.refresh", None)
         self.assertIsNotNone(win.selected_rule)
         self.assertEqual(str(win.selected_rule.get("id")), "2")
+
+    def test_funnel_button_swaps_content(self):
+        self.server.rules = [dict(RULE)]
+        win = self.make_window()
+        win.filter_button.set_active(True)
+        self.assertEqual(win.detail_page.get_child(), win.filter_panel)
+        win.filter_button.set_active(False)
+        self.assertEqual(win.detail_page.get_child(), win.detail_pane)
+
+    def test_show_content_on_selection(self):
+        self.server.rules = [dict(RULE)]
+        win = self.make_window()
+        win.detail_split.set_collapsed(True)
+        win.detail_split.set_show_content(False)
+        win.on_rule_selected(win.rules_list,
+                             win.rules_list.get_row_at_index(0))
+        self.assertTrue(win.detail_split.get_show_content())
+
+    def test_selected_row_highlighted_after_refresh(self):
+        self.server.rules = [dict(RULE), dict(RULE, snap="thunderbird", id="2")]
+        win = self.make_window()
+        win.on_rule_selected(win.rules_list,
+                             win.rules_list.get_row_at_index(1))
+        win.activate_action("win.refresh", None)
+        row = win.rules_list.get_selected_row()
+        self.assertIsNotNone(row)
+        self.assertEqual(str(row.rule.get("id")), "2")
 
     def test_collapsed_sidebar_toggle_reopens(self):
         win = self.make_window()
