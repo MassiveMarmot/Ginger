@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+
+# Flatpak build output
+.flatpak/
+.flatpak-builder/
+build/
+repo/
+*.flatpak
+*.flatpak.bundle
+
+# Distribution artifacts
+/dist/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
