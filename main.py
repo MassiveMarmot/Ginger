@@ -89,7 +89,7 @@ class Window(Adw.ApplicationWindow):
 
 class App(Adw.Application):
     def __init__(self):
-        super().__init__(application_id="org.example.SnapPathPermissions")
+        super().__init__(application_id="io.github.massivemarmot.snap-path-permissions")
 
     def do_activate(self):
         win = Window(self)
