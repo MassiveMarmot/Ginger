@@ -262,6 +262,7 @@ class Window(Adw.ApplicationWindow):
         if snap.get("not_installed"):
             subtitle += " · Not installed"
         row = Adw.ActionRow(title=name, subtitle=subtitle, use_markup=False)
+        row.set_activatable(True)
         row.snap_name = name
         row.add_prefix(Gtk.Image(icon_name="application-x-executable-symbolic"))
         if any(is_broad_pattern(

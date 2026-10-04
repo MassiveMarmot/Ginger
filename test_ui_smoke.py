@@ -263,6 +263,11 @@ class UISmokeTests(unittest.TestCase):
         texts = self.row_texts(win)
         self.assertEqual(texts[0][0], "<b>evil</b>&amp;")
 
+    def test_snap_rows_are_activatable(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        self.assertTrue(win.snaps_list.get_row_at_index(0).get_activatable())
+
     def test_collapsed_sidebar_toggle_reopens(self):
         win = self.make_window()
         win.main_split.set_collapsed(True)
