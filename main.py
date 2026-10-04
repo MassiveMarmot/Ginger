@@ -220,6 +220,8 @@ class Window(Adw.ApplicationWindow):
         active = button.get_active()
         self.detail_page.set_child(
             self.filter_panel if active else self.detail_pane)
+        if active:
+            self.detail_split.set_show_content(True)
         self.refresh_list()
 
     def on_search_toggled(self, button):
@@ -399,8 +401,10 @@ class Window(Adw.ApplicationWindow):
         selected_id = str((self.selected_rule or {}).get("id") or "")
         self.selected_rule = next(
             (r for r in self.rules if str(r.get("id")) == selected_id), None)
-        self.filter_snaps = set()
-        self.search_entry.set_text(self.query)
+        live_snaps = {str(r.get("snap") or "unknown") for r in self.rules}
+        self.filter_snaps &= live_snaps
+        if self.search_entry.get_text() != self.query:
+            self.search_entry.set_text(self.query)
         self.select_mode = False
         self.selected_ids = set()
         self.select_button.set_active(False)

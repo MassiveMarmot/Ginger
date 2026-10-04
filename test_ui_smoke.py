@@ -315,6 +315,33 @@ class UISmokeTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(str(row.rule.get("id")), "2")
 
+    def test_funnel_reveals_content_when_collapsed(self):
+        self.server.rules = [dict(RULE)]
+        win = self.make_window()
+        win.detail_split.set_collapsed(True)
+        win.detail_split.set_show_content(False)
+        win.filter_button.set_active(True)
+        self.assertTrue(win.detail_split.get_show_content())
+        self.assertEqual(win.detail_page.get_child(), win.filter_panel)
+
+    def test_filter_snaps_preserved_across_refresh(self):
+        self.server.rules = [dict(RULE), dict(RULE, snap="thunderbird", id="2")]
+        win = self.make_window()
+        row = win.filter_list.get_row_at_index(0)
+        row.check.set_active(True)
+        self.assertEqual(win.filter_snaps, {"firefox"})
+        win.activate_action("win.refresh", None)
+        self.assertEqual(win.filter_snaps, {"firefox"})
+        row = win.filter_list.get_row_at_index(0)
+        self.assertTrue(row.check.get_active())
+
+    def test_stale_filter_snap_dropped_on_refresh(self):
+        self.server.rules = [dict(RULE)]
+        win = self.make_window()
+        win.filter_snaps = {"firefox", "ghost"}
+        win.activate_action("win.refresh", None)
+        self.assertEqual(win.filter_snaps, {"firefox"})
+
     def test_collapsed_sidebar_toggle_reopens(self):
         win = self.make_window()
         win.main_split.set_collapsed(True)
