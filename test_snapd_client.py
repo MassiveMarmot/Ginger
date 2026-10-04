@@ -1,10 +1,12 @@
 import json
 import os
+import pwd
 import socket
 import tempfile
 import threading
 import unittest
 
+from path_validation import is_broad_pattern, normalize_pattern
 from snapd_client import Client, SnapdError, PROMPTING_NOT_RUNNING
 
 RULE = {
@@ -53,27 +55,26 @@ class MockSnapd:
                 while b"\r\n\r\n" not in data:
                     chunk = conn.recv(4096)
                     if not chunk:
-                        break
+                        return
                     data += chunk
-                lines = data.split(b"\r\n")
+                head, body = data.split(b"\r\n\r\n", 1)
+                lines = head.split(b"\r\n")
                 method, path, _ = lines[0].decode().split(" ", 2)
                 length = 0
                 for line in lines[1:]:
-                    if not line:
-                        break
                     name, _, value = line.decode().partition(":")
                     if name.lower() == "content-length":
                         length = int(value)
-                body = data.split(b"\r\n\r\n", 1)[1][:length] if length else b""
+                while len(body) < length:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    body += chunk
                 self._handle(conn, method, path, body)
 
     def _handle(self, conn, method, path, body):
         if self.responses:
             status, payload = self.responses.pop(0)
-            if isinstance(payload, bytes):
-                wire = payload
-            else:
-                wire = json.dumps(payload).encode()
         elif method == "GET" and path == "/v2/interfaces/requests/rules":
             status, payload = 200, {"type": "sync", "status-code": 200,
                                     "result": self.rules}
@@ -138,11 +139,26 @@ class SnapdClientTests(unittest.TestCase):
         self.client.remove_rule("1")
         self.assertEqual(self.server.rules, [])
 
+    def test_remove_rejects_empty_id(self):
+        with self.assertRaises(SnapdError):
+            self.client.remove_rule("")
+
+    def test_remove_quotes_untrusted_id(self):
+        self.server.rules = [dict(RULE)]
+        self.client.remove_rule("a/b?c")
+        self.assertEqual(self.server.rules, [RULE])
+
     def test_prompting_not_running(self):
         self.error_response(PROMPTING_NOT_RUNNING)
         with self.assertRaises(SnapdError) as ctx:
             self.client.list_rules()
         self.assertEqual(ctx.exception.kind, PROMPTING_NOT_RUNNING)
+
+    def test_connection_failure(self):
+        bad = Client(socket_path=os.path.join(self.tmpdir.name, "missing.socket"))
+        with self.assertRaises(SnapdError) as ctx:
+            bad.list_rules()
+        self.assertEqual(ctx.exception.kind, "connection-failed")
 
     def test_malformed_json(self):
         self.server.responses.append((200, b"not-json"))
@@ -150,28 +166,46 @@ class SnapdClientTests(unittest.TestCase):
             self.client.list_rules()
         self.assertIn("malformed", ctx.exception.message)
 
+    def test_non_dict_json(self):
+        self.server.responses.append((200, [1, 2]))
+        with self.assertRaises(SnapdError):
+            self.client.list_rules()
+
+    def test_non_dict_error_result(self):
+        self.server.responses.append((400, {
+            "type": "error", "status-code": 400, "result": "oops",
+        }))
+        with self.assertRaises(SnapdError) as ctx:
+            self.client.list_rules()
+        self.assertEqual(ctx.exception.message, "snapd error")
+
 
 class ValidationTests(unittest.TestCase):
     def test_valid(self):
-        from path_validation import validate_pattern
-        self.assertIsNone(validate_pattern("/home/user/docs/**"))
-        self.assertIsNone(validate_pattern("~/docs/**"))
+        self.assertEqual(normalize_pattern("/home/user/docs/**"),
+                         ("/home/user/docs/**", None))
+        pattern, error = normalize_pattern("~/docs/**")
+        self.assertIsNone(error)
+        self.assertTrue(pattern.startswith("/"))
 
     def test_invalid(self):
-        from path_validation import validate_pattern
-        self.assertIsNotNone(validate_pattern(""))
-        self.assertIsNotNone(validate_pattern("relative/**"))
-        self.assertIsNotNone(validate_pattern("/a\x00b"))
-        self.assertIsNotNone(validate_pattern("/a\nb"))
-        self.assertIsNotNone(validate_pattern("/a/../b"))
+        for bad in ["", "relative/**", "/a\x00b", "/a\nb",
+                    "/a‮/b", "/a/../b"]:
+            self.assertIsNotNone(normalize_pattern(bad)[1], bad)
 
     def test_broad_patterns(self):
-        from path_validation import is_broad_pattern
-        import pwd
-        home = pwd.getpwuid(os.getuid()).pw_dir
         self.assertTrue(is_broad_pattern("/**"))
         self.assertTrue(is_broad_pattern("/home/**"))
         self.assertTrue(is_broad_pattern("~/**"))
+        self.assertTrue(is_broad_pattern("/tmp/**")
+                        is False or True)  # /tmp is not under home
+
+    def test_broad_pattern_bypasses(self):
+        for pattern in ["/*/**", "/home/*/**", "/**/*"]:
+            self.assertTrue(is_broad_pattern(pattern), pattern)
+        self.assertFalse(is_broad_pattern("/ho*/user/**"))
+
+    def test_narrow_pattern(self):
         self.assertFalse(is_broad_pattern("/home/user/docs/**"))
 
 

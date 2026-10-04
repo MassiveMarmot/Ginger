@@ -2,6 +2,7 @@ import http.client
 import json
 import os
 import socket
+import urllib.parse
 
 DEFAULT_SOCKET = os.environ.get("SNAPD_SOCKET", "/run/snapd.socket")
 
@@ -47,14 +48,22 @@ class Client:
                          headers={"Content-Type": "application/json"})
             resp = conn.getresponse()
             raw = resp.read()
+        except OSError as e:
+            raise SnapdError(str(e), kind="connection-failed")
         finally:
             conn.close()
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            raise SnapdError("snapd returned malformed JSON", status_code=resp.status)
+            raise SnapdError("snapd returned malformed JSON",
+                             status_code=resp.status)
+        if not isinstance(payload, dict):
+            raise SnapdError("unexpected snapd response",
+                             status_code=resp.status)
         if payload.get("type") == "error":
-            result = payload.get("result") or {}
+            result = payload.get("result")
+            if not isinstance(result, dict):
+                result = {}
             raise SnapdError(result.get("message", "snapd error"),
                              kind=result.get("kind"), status_code=resp.status)
         return payload.get("result")
@@ -83,8 +92,10 @@ class Client:
         return self._request("POST", "/v2/interfaces/requests/rules", body)
 
     def remove_rule(self, rule_id):
-        return self._request("POST", "/v2/interfaces/requests/rules/%s" % rule_id,
-                             {"action": "remove"})
+        if not rule_id:
+            raise SnapdError("empty rule id")
+        path = "/v2/interfaces/requests/rules/" + urllib.parse.quote(rule_id, safe="")
+        return self._request("POST", path, {"action": "remove"})
 
     def list_snaps(self):
         # UNVERIFIED: GET /v2/snaps reachable from inside a Flatpak.
