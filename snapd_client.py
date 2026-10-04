@@ -38,7 +38,8 @@ class UnixHTTPConnection(http.client.HTTPConnection):
 
 class Client:
     def __init__(self, socket_path=None):
-        self.socket_path = socket_path or DEFAULT_SOCKET
+        self.socket_path = socket_path or os.environ.get("SNAPD_SOCKET",
+                                                         DEFAULT_SOCKET)
 
     def _request(self, method, path, body=None):
         data = json.dumps(body).encode() if body is not None else None

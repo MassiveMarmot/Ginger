@@ -4,7 +4,7 @@ import gi
 
 gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
-from gi.repository import Adw, Gio, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk
 
 from snapd_client import PROMPTING_NOT_RUNNING, Client, SnapdError
 
@@ -26,14 +26,15 @@ class Window(Adw.ApplicationWindow):
 
         refresh = Gio.SimpleAction.new("refresh", None)
         refresh.connect("activate", lambda *a: self.load())
-        app.add_action(refresh)
+        self.add_action(refresh)
         header.pack_start(Gtk.Button(
             icon_name="view-refresh-symbolic", action_name="win.refresh",
             tooltip_text="Refresh"))
 
     def show_status_page(self, title, description, icon):
         self.bin.set_child(Adw.StatusPage(
-            title=title, description=description, icon_name=icon))
+            title=title, description=GLib.markup_escape_text(description),
+            icon_name=icon))
 
     def show_rules(self, rules):
         grouped = {}
@@ -53,7 +54,7 @@ class Window(Adw.ApplicationWindow):
         scroll = Gtk.ScrolledWindow()
         scroll.set_child(box)
         for snap in sorted(grouped):
-            group = Adw.PreferencesGroup(title=snap)
+            group = Adw.PreferencesGroup(title=GLib.markup_escape_text(snap))
             for rule in grouped[snap]:
                 group.add(self.rule_row(rule))
             box.append(group)
@@ -69,7 +70,8 @@ class Window(Adw.ApplicationWindow):
             for name, spec in perms.items()
             if isinstance(spec, dict))
         return Adw.ActionRow(title=str(constraints.get("path-pattern") or "?"),
-                             subtitle=subtitle or "no permissions")
+                             subtitle=subtitle or "no permissions",
+                             use_markup=False)
 
     def load(self):
         try:

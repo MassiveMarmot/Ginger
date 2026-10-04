@@ -65,6 +65,46 @@ class UISmokeTests(unittest.TestCase):
         page = self.child(win)
         self.assertEqual(page.get_title(), "AppArmor prompting is not enabled")
 
+    def find_labels(self, widget, out):
+        from gi.repository import Gtk
+        if isinstance(widget, Gtk.Label):
+            out.append(widget)
+        child = widget.get_first_child()
+        while child:
+            self.find_labels(child, out)
+            child = child.get_next_sibling()
+        return out
+
+    def test_markup_in_pattern_and_snap_not_parsed(self):
+        nasty = dict(RULE, snap="<b>evil</b>&amp;", id="9")
+        nasty["constraints"] = dict(RULE["constraints"],
+                                     **{"path-pattern": "<b>x</b>&amp;"})
+        self.server.rules = [nasty]
+        win = self.make_window()
+        texts = [l.get_text() for l in self.find_labels(self.child(win), [])]
+        self.assertIn("<b>x</b>&amp;", texts)
+        self.assertIn("<b>evil</b>&amp;", texts)
+
+    def test_markup_in_error_message_not_parsed(self):
+        self.server.responses.append((400, {
+            "type": "error", "status-code": 400,
+            "result": {"message": "<b>evil</b>&amp;", "kind": "some-kind"},
+        }))
+        win = self.make_window()
+        page = self.child(win)
+        self.assertEqual(page.get_title(), "Could not reach snapd")
+        texts = [l.get_text() for l in self.find_labels(page, [])]
+        self.assertIn("<b>evil</b>&amp;", texts)
+
+    def test_refresh_action_reloads(self):
+        self.server.rules = [dict(RULE)]
+        win = self.main.Window(self.app)
+        win.load()
+        self.server.rules = [dict(RULE), dict(RULE, snap="extra", id="2")]
+        win.activate_action("win.refresh", None)
+        from gi.repository import Gtk
+        self.assertIsInstance(self.child(win), Gtk.ScrolledWindow)
+
     def test_connection_error_page(self):
         bad = self.main.Window.__new__(self.main.Window)
         import snapd_client
