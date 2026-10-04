@@ -29,6 +29,11 @@ class UISmokeTests(unittest.TestCase):
         cls.app.run([])
 
     @classmethod
+    def setUp(self):
+        self.server.rules = []
+        self.server.responses = []
+
+    @classmethod
     def tearDownClass(cls):
         cls.server.stop()
         cls.tmpdir.cleanup()
@@ -92,7 +97,7 @@ class UISmokeTests(unittest.TestCase):
         }))
         win = self.make_window()
         page = self.child(win)
-        self.assertEqual(page.get_title(), "Could not reach snapd")
+        self.assertEqual(page.get_title(), "snapd returned an error")
         texts = [l.get_text() for l in self.find_labels(page, [])]
         self.assertIn("<b>evil</b>&amp;", texts)
 
@@ -100,10 +105,11 @@ class UISmokeTests(unittest.TestCase):
         self.server.rules = [dict(RULE)]
         win = self.main.Window(self.app)
         win.load()
-        self.server.rules = [dict(RULE), dict(RULE, snap="extra", id="2")]
+        self.server.rules = []
         win.activate_action("win.refresh", None)
-        from gi.repository import Gtk
-        self.assertIsInstance(self.child(win), Gtk.ScrolledWindow)
+        page = self.child(win)
+        self.assertEqual(type(page).__name__, "StatusPage")
+        self.assertEqual(page.get_title(), "No rules")
 
     def test_connection_error_page(self):
         bad = self.main.Window.__new__(self.main.Window)

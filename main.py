@@ -80,9 +80,12 @@ class Window(Adw.ApplicationWindow):
             if e.kind == PROMPTING_NOT_RUNNING:
                 self.show_status_page("AppArmor prompting is not enabled",
                                       NOT_RUNNING_TEXT, "security-low-symbolic")
-            else:
+            elif e.kind == "connection-failed":
                 self.show_status_page("Could not reach snapd", e.message,
                                       "network-error-symbolic")
+            else:
+                self.show_status_page("snapd returned an error", e.message,
+                                      "dialog-warning-symbolic")
             return
         self.show_rules(rules)
 

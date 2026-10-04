@@ -4,7 +4,7 @@ import os
 import socket
 import urllib.parse
 
-DEFAULT_SOCKET = os.environ.get("SNAPD_SOCKET", "/run/snapd.socket")
+DEFAULT_SOCKET = "/run/snapd.socket"
 
 # UNVERIFIED: permission names other than "read". Likely "write", "execute".
 PERMISSIONS = ("read", "write", "execute")
