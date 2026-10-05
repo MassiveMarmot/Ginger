@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/io/github/massivemarmot/SnapPathPermissions/icons">
+    <file alias="funnel-symbolic.svg">funnel-symbolic.svg</file>
+  </gresource>
+</gresources>

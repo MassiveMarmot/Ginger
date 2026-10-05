@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+import os
 import sys
 
 import gi
@@ -7,12 +8,21 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gio, GLib, GObject, Gtk
 
+try:
+    resource = Gio.Resource.load(
+        os.path.join(os.path.dirname(__file__), "icons",
+                     "snap-path-permissions.gresource"))
+    Gio.resources_register(resource)
+except (OSError, GLib.Error):
+    pass
+
 from path_validation import is_broad_pattern
 from snapd_client import PROMPTING_NOT_RUNNING, Client, SnapdError
 
 NOT_RUNNING_TEXT = ("Install the prompting-client snap and enable the "
                     "toggle in Security Center (App permissions tab).")
 APP_ID = "io.github.massivemarmot.SnapPathPermissions"
+FUNNEL_ICON = "resource://%s/icons/funnel-symbolic.svg" % APP_ID
 
 
 class Window(Adw.ApplicationWindow):
@@ -168,7 +178,7 @@ class Window(Adw.ApplicationWindow):
         self.list_header.set_title_widget(self.list_title)
 
         self.filter_button = Gtk.ToggleButton(
-            icon_name="funnel-symbolic", tooltip_text="Filter")
+            icon_name=FUNNEL_ICON, tooltip_text="Filter")
         self.filter_button.connect("toggled", self.on_filter_toggled)
         self.list_header.pack_end(self.filter_button)
 
@@ -177,8 +187,8 @@ class Window(Adw.ApplicationWindow):
         self.search_entry.connect("search-changed", self.on_search_changed)
         self.search_bar.set_child(self.search_entry)
 
-        self.snaps_list = Gtk.ListBox(css_classes=["boxed-list"],
-                                      activate_on_single_click=True)
+        self.snaps_list = Gtk.ListBox(
+            css_classes=["navigation-sidebar"], activate_on_single_click=True)
         self.snaps_list.connect("row-activated", self.on_snap_selected)
 
         self.filter_panel = self.build_filter_panel()
@@ -193,7 +203,7 @@ class Window(Adw.ApplicationWindow):
         list_view.set_content(list_box)
 
         self.detail_pane = Adw.ToolbarView()
-        detail_header = Adw.HeaderBar()
+        detail_header = Adw.HeaderBar(show_title=False)
         self.detail_pane.add_top_bar(detail_header)
         self.detail_bin = Adw.Bin()
         scroller2 = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
@@ -258,7 +268,7 @@ class Window(Adw.ApplicationWindow):
         snap = self.snap_names().get(name, {})
         rules = self.rules_by_snap().get(name, [])
         count = len(rules)
-        subtitle = "%d rules" % count if count else "No rules"
+        subtitle = "%d rule" % count if count == 1 else ("%d rules" % count if count else "No rules")
         if snap.get("not_installed"):
             subtitle += " · Not installed"
         row = Adw.ActionRow(title=name, subtitle=subtitle, use_markup=False)
@@ -318,7 +328,8 @@ class Window(Adw.ApplicationWindow):
             summary.set_text(str(snap.get("summary")))
             box.append(summary)
         add_button = Gtk.Button(label="Add Rule",
-                                css_classes=["suggested-action", "pill"])
+                                css_classes=["suggested-action", "pill"],
+                                sensitive=False)
         add_button.set_valign(Gtk.Align.CENTER)
         box.append(add_button)
         card = Adw.PreferencesGroup()
@@ -371,7 +382,7 @@ class Window(Adw.ApplicationWindow):
                 icon_name="dialog-warning-symbolic",
                 tooltip_text="Broad pattern"))
         trash = Gtk.Button(icon_name="user-trash-symbolic",
-                           css_classes=["flat"])
+                           css_classes=["flat"], sensitive=False)
         row.add_suffix(trash)
         return row
 
@@ -407,6 +418,10 @@ class Window(Adw.ApplicationWindow):
             self.search_entry.set_text(self.query)
         self.page_stack.set_visible_child_name("snaps")
         self.refresh_list()
+        if self.selected_snap is None:
+            first = self.snaps_list.get_row_at_index(0)
+            if first is not None and hasattr(first, "snap_name"):
+                self.on_snap_selected(self.snaps_list, first)
 
     def setup_breakpoints(self):
         b1 = Adw.Breakpoint(condition=Adw.BreakpointCondition.parse(
@@ -417,6 +432,8 @@ class Window(Adw.ApplicationWindow):
         b2 = Adw.Breakpoint(condition=Adw.BreakpointCondition.parse(
             "max-width: 600"))
         b2.add_setter(self.detail_split, "collapsed", True)
+        b2.add_setter(self.main_split, "collapsed", True)
+        b2.add_setter(self.main_split, "max-sidebar-width", 280)
         self.add_breakpoint(b2)
 
 

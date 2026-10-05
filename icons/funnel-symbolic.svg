@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Simple funnel glyph, drawn for this project.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <path d="M2 2h12v2l-4 4v6l-4-2V8L2 4z" fill="#bebebe"/>
+</svg>

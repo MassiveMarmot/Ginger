@@ -11,7 +11,7 @@ from test_snapd_client import MockSnapd, RULE  # noqa: E402
 import snapd_client  # noqa: E402
 from snapd_client import PROMPTING_NOT_RUNNING  # noqa: E402
 
-from gi.repository import Adw, Gtk  # noqa: E402
+from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 SNAP_APP = {"name": "firefox", "type": "app", "version": "1.0",
             "summary": "Browse the web"}
@@ -101,7 +101,7 @@ class UISmokeTests(unittest.TestCase):
         self.server.snaps = [dict(SNAP_APP)]
         win = self.make_window()
         texts = self.row_texts(win)
-        self.assertIn("1 rules", texts[0])
+        self.assertIn("1 rule", texts[0])
         self.server.rules = []
         win.activate_action("win.refresh", None)
         texts = self.row_texts(win)
@@ -267,6 +267,34 @@ class UISmokeTests(unittest.TestCase):
         self.server.snaps = [dict(SNAP_APP)]
         win = self.make_window()
         self.assertTrue(win.snaps_list.get_row_at_index(0).get_activatable())
+
+    def test_minimal_snap_object(self):
+        self.server.snaps = [{"name": "x"}]
+        win = self.make_window()
+        self.assertEqual(self.row_texts(win), [["x", "No rules"]])
+
+    def run_until(self, condition, timeout_ms=2000):
+        ctx = GLib.MainContext.default()
+        end = GLib.get_monotonic_time() + timeout_ms * 1000
+        while not condition() and GLib.get_monotonic_time() < end:
+            ctx.iteration(True)
+
+    def test_breakpoint_700px(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        win.set_default_size(700, 600)
+        self.run_until(lambda: win.main_split.get_collapsed())
+        self.assertTrue(win.main_split.get_collapsed())
+        self.assertFalse(win.detail_split.get_collapsed())
+
+    def test_breakpoint_500px(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        win.set_default_size(500, 600)
+        self.run_until(lambda: win.main_split.get_collapsed()
+                       and win.detail_split.get_collapsed())
+        self.assertTrue(win.main_split.get_collapsed())
+        self.assertTrue(win.detail_split.get_collapsed())
 
     def test_collapsed_sidebar_toggle_reopens(self):
         win = self.make_window()
