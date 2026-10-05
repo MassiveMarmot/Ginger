@@ -92,6 +92,7 @@ class MockSnapd:
             status, payload = 200, {"type": "sync", "status-code": 200,
                                     "result": self.snaps}
         elif method == "POST" and path.startswith("/v2/interfaces/requests/rules/"):
+            self.posts.append((path, json.loads(body)))
             self.rules = [r for r in self.rules
                           if r["id"] != path.rsplit("/", 1)[1]]
             status, payload = 200, {"type": "sync", "status-code": 200,
@@ -218,7 +219,7 @@ class ValidationTests(unittest.TestCase):
     def test_broad_pattern_bypasses(self):
         for pattern in ["/*/**", "/home/*/**", "/**/*", "/home/us*/**",
                         "/*/user/**", "/h*/**", "/home/u?er/**",
-                        "/ho*/user/**"]:
+                        "/ho*/user/**", "/home/user/**/*"]:
             self.assertTrue(is_broad_pattern(pattern, home="/home/user"),
                             pattern)
         self.assertTrue(is_broad_pattern("/home/*/**", home="/root"))

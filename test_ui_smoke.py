@@ -131,12 +131,21 @@ class UISmokeTests(unittest.TestCase):
         ctx = GLib.MainContext.default()
         for _ in range(5):
             ctx.iteration(False)
-        dialogs = []
-        for w in Gtk.Window.list_toplevels():
-            if w is win:
-                continue
-            dialogs += [d for d in self.walk(w) if isinstance(d, Adw.Dialog)]
+        dialogs = [d for d in self.walk(win) if isinstance(d, Adw.Dialog)]
         return add, dialogs[0] if dialogs else None
+
+    def find_alert_by_heading(self, heading):
+        ctx = GLib.MainContext.default()
+        for _ in range(10):
+            found = []
+            for w in Gtk.Window.list_toplevels():
+                found += [d for d in self.walk(w)
+                          if isinstance(d, Adw.AlertDialog)
+                          and d.get_heading() == heading]
+            if found:
+                return found[0]
+            ctx.iteration(False)
+        return None
 
     def find_alert(self):
         ctx = GLib.MainContext.default()
@@ -286,6 +295,165 @@ class UISmokeTests(unittest.TestCase):
                       for d in self.walk(w)
                       if isinstance(d, Adw.Dialog)]:
             dialog.force_close()
+
+    def test_add_rule_warning_text(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        _, dialog = self.add_dialog(win)
+        dialog.entry_row.set_text("~/**")
+        dialog.add_button.emit("clicked")
+        alert = self.find_alert()
+        self.assertIsNotNone(alert)
+        self.assertEqual(alert.get_heading(), "This pattern is very broad")
+        self.assertEqual(
+            alert.get_body(),
+            "firefox would be allowed to read everything this pattern "
+            "matches, which includes your whole home folder.")
+        alert.emit("response", "cancel")
+
+    def test_broad_confirmation_resets_on_edit(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        _, dialog = self.add_dialog(win)
+        self.server.responses.append((400, {
+            "type": "error", "status-code": 400,
+            "result": {"message": "conflict", "kind": "rule-conflict"},
+        }))
+        dialog.entry_row.set_text("~/**")
+        dialog.add_button.emit("clicked")
+        alert = self.find_alert()
+        alert.emit("response", "add")
+        self.run_until(lambda: dialog.error_label.get_text() != "")
+        dialog.entry_row.set_text("/home/**")
+        dialog.add_button.emit("clicked")
+        self.assertIsNotNone(self.find_alert())
+
+    def test_dialog_attached_to_window(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        _, dialog = self.add_dialog(win)
+        self.assertEqual(dialog.get_root(), win)
+
+    def test_enter_submits_when_valid(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        _, dialog = self.add_dialog(win)
+        dialog.entry_row.set_text("/home/user/docs/**")
+        dialog.entry_row.emit("entry-activated")
+        self.run_until(lambda: self.server.posts)
+        self.assertEqual(len(self.server.posts), 1)
+
+    def test_trailing_space_stripped(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        _, dialog = self.add_dialog(win)
+        dialog.entry_row.set_text("  /home/user/docs/**  ")
+        self.assertTrue(dialog.add_button.get_sensitive())
+        self.assertEqual(dialog.preview_label.get_text(),
+                         "Will add: /home/user/docs/**")
+
+    def trash_buttons(self, win):
+        return [b for b in self.walk(win.detail_bin.get_child())
+                if isinstance(b, Gtk.Button)
+                and b.get_icon_name() == "user-trash-symbolic"]
+
+    def test_trash_opens_confirmation(self):
+        self.server.rules = [dict(RULE)]
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        trash = self.trash_buttons(win)[0]
+        self.assertTrue(trash.get_sensitive())
+        trash.emit("clicked")
+        alert = self.find_alert()
+        self.assertIsNotNone(alert)
+        self.assertEqual(alert.get_heading(), "Remove this rule?")
+        alert.emit("response", "cancel")
+        self.run_until(lambda: not alert.get_visible())
+        self.assertEqual(self.server.posts, [])
+
+    def test_trash_confirm_removes(self):
+        self.server.rules = [dict(RULE)]
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        win.query = ""
+        trash = self.trash_buttons(win)[0]
+        trash.emit("clicked")
+        alert = self.find_alert()
+        self.assertIn("firefox", alert.get_body())
+        self.assertIn("/home/user/docs/**", alert.get_body())
+        alert.emit("response", "remove")
+        self.run_until(lambda: self.server.posts)
+        self.assertEqual(len(self.server.posts), 1)
+        path, body = self.server.posts[0]
+        self.assertEqual(path, "/v2/interfaces/requests/rules/1")
+        self.assertEqual(body, {"action": "remove"})
+        self.assertEqual(win.selected_snap, "firefox")
+        self.assertIn("No rules", [l.get_text() for l in self.find_labels(
+            win.snaps_list.get_row_at_index(0), [])])
+
+    def test_rule_id_quoted_in_url(self):
+        rule = dict(RULE, id="a/b?c")
+        self.server.rules = [rule]
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        trash = self.trash_buttons(win)[0]
+        trash.emit("clicked")
+        self.find_alert().emit("response", "remove")
+        self.run_until(lambda: self.server.posts)
+        path, _ = self.server.posts[0]
+        self.assertEqual(path, "/v2/interfaces/requests/rules/a%2Fb%3Fc")
+
+    def test_no_id_keeps_disabled_trash(self):
+        rule = dict(RULE)
+        del rule["id"]
+        self.server.rules = [rule]
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        trash = self.trash_buttons(win)[0]
+        self.assertFalse(trash.get_sensitive())
+
+    def test_not_installed_rule_removable(self):
+        self.server.rules = [dict(RULE, snap="gone")]
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list,
+                             win.snaps_list.get_row_at_index(1))
+        trash = self.trash_buttons(win)[0]
+        self.assertTrue(trash.get_sensitive())
+        trash.emit("clicked")
+        self.find_alert().emit("response", "remove")
+        self.run_until(lambda: self.server.posts)
+        self.assertEqual(len(self.server.posts), 1)
+
+    def test_remove_error_shows_alert_and_reloads(self):
+        self.server.rules = [dict(RULE)]
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        self.server.responses.append((400, {
+            "type": "error", "status-code": 400,
+            "result": {"message": "<b>gone</b>&amp;", "kind": "some-kind"},
+        }))
+        trash = self.trash_buttons(win)[0]
+        trash.emit("clicked")
+        self.find_alert().emit("response", "remove")
+        self.run_until(lambda: self.server.posts)
+        error = self.find_alert_by_heading("Could not remove rule")
+        self.assertIsNotNone(error)
+        self.assertEqual(error.get_body(), "<b>gone</b>&amp;")
+        self.assertEqual(self.server.rules, [dict(RULE)])
+
+    def test_markup_in_confirmation_body(self):
+        rule = dict(RULE, snap="<b>evil</b>&amp;")
+        rule["constraints"] = dict(RULE["constraints"],
+                                    **{"path-pattern": "<b>p</b>&amp;"})
+        self.server.rules = [rule]
+        self.server.snaps = [dict(SNAP_APP, name="<b>evil</b>&amp;")]
+        win = self.make_window()
+        trash = self.trash_buttons(win)[0]
+        trash.emit("clicked")
+        alert = self.find_alert()
+        self.assertIn("<b>evil</b>&amp;", alert.get_body())
+        self.assertIn("<b>p</b>&amp;", alert.get_body())
 
     def test_add_rule_button_is_compact_pill(self):
         self.server.snaps = [dict(SNAP_APP)]

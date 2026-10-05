@@ -58,4 +58,5 @@ def is_broad_pattern(pattern, home=None):
         return True
     regex = _glob_regex(expanded)
     return (regex.match(home) is not None
-            or regex.match(home + "/x") is not None)
+            or regex.match(home + "/x") is not None
+            or regex.match(home + "/x/x") is not None)
