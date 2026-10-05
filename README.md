@@ -1,4 +1,4 @@
-# Steward
+# Steward - Manage your Snaps
 
 Steward is a GNOME app that lists the snaps installed on your system and lets
 you review and manage each snap's path permissions (AppArmor prompting
