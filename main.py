@@ -410,13 +410,42 @@ class Window(Adw.ApplicationWindow):
             row.add_suffix(Gtk.Image(
                 icon_name="dialog-warning-symbolic",
                 tooltip_text="Broad pattern"))
+        rule_id = rule.get("id") if isinstance(rule, dict) else None
         trash = Gtk.Button(icon_name="user-trash-symbolic",
-                           css_classes=["flat"], sensitive=False)
+                           css_classes=["flat"],
+                           sensitive=bool(rule_id))
+        if rule_id:
+            trash.connect("clicked", self.on_remove_rule_clicked,
+                          str(rule_id), pattern)
         row.add_suffix(trash)
         return row
 
+    def on_remove_rule_clicked(self, button, rule_id, pattern):
+        alert = Adw.AlertDialog(
+            heading="Remove this rule?",
+            body="%s would no longer be allowed to read %s."
+                 % (self.selected_snap, pattern))
+        alert.add_response("cancel", "Cancel")
+        alert.add_response("remove", "Remove")
+        alert.set_response_appearance(
+            "remove", Adw.ResponseAppearance.DESTRUCTIVE)
+        alert.choose(self, None, self.on_remove_confirmed, rule_id)
+
+    def on_remove_confirmed(self, source, result, rule_id):
+        if source.choose_finish(result) != "remove":
+            return
+        source.set_response_enabled("remove", False)
+        try:
+            self.client.remove_rule(rule_id)
+        except SnapdError as e:
+            error = Adw.AlertDialog(heading="Could not remove rule",
+                                    body=e.message)
+            error.add_response("ok", "OK")
+            error.present(self)
+        self.load()
+
     def on_add_rule_clicked(self, button):
-        AddRuleDialog(self, self.selected_snap).present()
+        AddRuleDialog(self, self.selected_snap).present(self)
 
     def copy_text(self, button, text):
         self.get_clipboard().set_text(text)
@@ -481,6 +510,7 @@ class AddRuleDialog(Adw.Dialog):
 
         self.entry_row = Adw.EntryRow(title="Path pattern")
         self.entry_row.connect("changed", self.on_entry_changed)
+        self.entry_row.connect("entry-activated", self.on_entry_activated)
         self.error_label = Gtk.Label(use_markup=False, wrap=True,
                                      css_classes=["error"])
         self.preview_label = Gtk.Label(use_markup=False, wrap=True,
@@ -514,7 +544,8 @@ class AddRuleDialog(Adw.Dialog):
         self.set_child(view)
 
     def on_entry_changed(self, entry):
-        text = entry.get_text()
+        text = entry.get_text().strip()
+        self.confirmed_broad = False
         if not text:
             self.pattern = None
             self.error_label.set_text("")
@@ -533,14 +564,19 @@ class AddRuleDialog(Adw.Dialog):
         self.preview_label.set_text("Will add: %s" % pattern)
         self.add_button.set_sensitive(True)
 
+    def on_entry_activated(self, entry):
+        if self.add_button.get_sensitive():
+            self.on_add_clicked(self.add_button)
+
     def on_add_clicked(self, button):
         if self.pattern is None:
             return
         if is_broad_pattern(self.pattern) and not self.confirmed_broad:
-            alert = Adw.AlertDialog(heading="This pattern covers your whole "
-                                           "home folder",
-                                    body="Anyone reading this rule can read "
-                                         "your entire home folder.")
+            alert = Adw.AlertDialog(
+                heading="This pattern is very broad",
+                body="%s would be allowed to read everything this pattern "
+                    "matches, which includes your whole home folder."
+                    % self.snap_name)
             alert.add_response("cancel", "Cancel")
             alert.add_response("add", "Add anyway")
             alert.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED)
