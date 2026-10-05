@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Steward
+Comment=Manage your Snaps
+Exec=steward
+Icon=io.github.massivemarmot.Steward
+Terminal=false
+Categories=GNOME;GTK;System;
+Keywords=snap;permissions;

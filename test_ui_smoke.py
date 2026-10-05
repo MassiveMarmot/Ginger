@@ -8,6 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from test_snapd_client import MockSnapd, RULE  # noqa: E402
 
+import re
+
 import snapd_client  # noqa: E402
 from snapd_client import PROMPTING_NOT_RUNNING  # noqa: E402
 
@@ -379,8 +381,9 @@ class UISmokeTests(unittest.TestCase):
         trash = self.trash_buttons(win)[0]
         trash.emit("clicked")
         alert = self.find_alert()
-        self.assertIn("firefox", alert.get_body())
-        self.assertIn("/home/user/docs/**", alert.get_body())
+        self.assertEqual(alert.get_body(),
+                         "firefox\n/home/user/docs/**\n"
+                         "read: allow / forever")
         alert.emit("response", "remove")
         self.run_until(lambda: self.server.posts)
         self.assertEqual(len(self.server.posts), 1)
@@ -444,16 +447,35 @@ class UISmokeTests(unittest.TestCase):
 
     def test_markup_in_confirmation_body(self):
         rule = dict(RULE, snap="<b>evil</b>&amp;")
-        rule["constraints"] = dict(RULE["constraints"],
-                                    **{"path-pattern": "<b>p</b>&amp;"})
+        rule["constraints"] = {
+            "path-pattern": "<b>p</b>&amp;",
+            "permissions": {"read": {"outcome": "<b>allow</b>&amp;",
+                                     "lifespan": "<b>forever</b>&amp;"}},
+        }
         self.server.rules = [rule]
         self.server.snaps = [dict(SNAP_APP, name="<b>evil</b>&amp;")]
         win = self.make_window()
         trash = self.trash_buttons(win)[0]
         trash.emit("clicked")
         alert = self.find_alert()
-        self.assertIn("<b>evil</b>&amp;", alert.get_body())
-        self.assertIn("<b>p</b>&amp;", alert.get_body())
+        self.assertEqual(
+            alert.get_body(),
+            "<b>evil</b>&amp;\n<b>p</b>&amp;\n"
+            "read: <b>allow</b>&amp; / <b>forever</b>&amp;")
+
+    def test_remove_rule_not_found_reloads_silently(self):
+        self.server.rules = [dict(RULE)]
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        trash = self.trash_buttons(win)[0]
+        self.server.rules = []
+        trash.emit("clicked")
+        self.find_alert().emit("response", "remove")
+        self.run_until(lambda: self.server.posts)
+        self.assertIsNone(
+            self.find_alert_by_heading("Could not remove rule"))
+        self.assertIn("No rules", [l.get_text() for l in self.find_labels(
+            win.snaps_list.get_row_at_index(0), [])])
 
     def test_add_rule_button_is_compact_pill(self):
         self.server.snaps = [dict(SNAP_APP)]
@@ -728,6 +750,34 @@ class UISmokeTests(unittest.TestCase):
         self.assertTrue(win.main_split.get_show_sidebar())
         win.main_split.set_show_sidebar(False)
         self.assertFalse(win.sidebar_toggle.get_active())
+
+
+class PackagingTests(unittest.TestCase):
+    def test_app_id_and_version_consistent(self):
+        root = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(root, "main.py")) as f:
+            main_src = f.read()
+        self.assertIn('APP_ID = "io.github.massivemarmot.Steward"', main_src)
+        m = re.search(r'VERSION = "([0-9.]+)"', main_src)
+        self.assertIsNotNone(m)
+        version = m.group(1)
+        with open(os.path.join(root,
+                               "io.github.massivemarmot.Steward.yml")) as f:
+            manifest = f.read()
+        self.assertIn("io.github.massivemarmot.Steward", manifest)
+        with open(os.path.join(
+                root, "data/io.github.massivemarmot.Steward.desktop")) as f:
+            desktop = f.read()
+        self.assertIn("Icon=io.github.massivemarmot.Steward", desktop)
+        with open(os.path.join(
+                root,
+                "data/io.github.massivemarmot.Steward.metainfo.xml")) as f:
+            metainfo = f.read()
+        self.assertIn("<id>io.github.massivemarmot.Steward</id>", metainfo)
+        self.assertIn('version="%s"' % version, metainfo)
+        self.assertIn(
+            '<launchable type="desktop-id">'
+            "io.github.massivemarmot.Steward.desktop</launchable>", metainfo)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import socket
 import tempfile
 import threading
 import unittest
+import urllib.parse
 
 from path_validation import is_broad_pattern, normalize_pattern
 from snapd_client import Client, SnapdError, PROMPTING_NOT_RUNNING
@@ -93,10 +94,17 @@ class MockSnapd:
                                     "result": self.snaps}
         elif method == "POST" and path.startswith("/v2/interfaces/requests/rules/"):
             self.posts.append((path, json.loads(body)))
-            self.rules = [r for r in self.rules
-                          if r["id"] != path.rsplit("/", 1)[1]]
-            status, payload = 200, {"type": "sync", "status-code": 200,
-                                   "result": None}
+            rule_id = urllib.parse.unquote(path.rsplit("/", 1)[1])
+            if any(r.get("id") == rule_id for r in self.rules):
+                self.rules = [r for r in self.rules
+                              if r.get("id") != rule_id]
+                status, payload = 200, {"type": "sync", "status-code": 200,
+                                       "result": None}
+            else:
+                status, payload = 404, {
+                    "type": "error", "status-code": 404,
+                    "result": {"message": "cannot find rule with the given ID",
+                               "kind": "interfaces-requests-rule-not-found"}}
         else:
             status, payload = 404, {"type": "error", "status-code": 404,
                                     "result": {"message": "not found",
@@ -152,9 +160,11 @@ class SnapdClientTests(unittest.TestCase):
             self.client.remove_rule("")
 
     def test_remove_quotes_untrusted_id(self):
-        self.server.rules = [dict(RULE)]
+        self.server.rules = [dict(RULE, id="a/b?c")]
         self.client.remove_rule("a/b?c")
-        self.assertEqual(self.server.rules, [RULE])
+        self.assertEqual(self.server.rules, [])
+        self.assertEqual(self.server.posts[0][0],
+                         "/v2/interfaces/requests/rules/a%2Fb%3Fc")
 
     def test_prompting_not_running(self):
         self.error_response(PROMPTING_NOT_RUNNING)
