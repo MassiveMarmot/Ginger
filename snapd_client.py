@@ -15,6 +15,7 @@ LIFESPANS = ("forever", "session")
 OUTCOMES = ("allow", "deny")
 
 PROMPTING_NOT_RUNNING = "apparmor-prompting-not-running"
+RULE_NOT_FOUND = "interfaces-requests-rule-not-found"
 
 
 class SnapdError(Exception):

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later
+     Original artwork drawn for Steward. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#62a0ea"/>
+      <stop offset="1" stop-color="#3584e4"/>
+    </linearGradient>
+  </defs>
+  <path d="M64 8 L112 24 V64 C112 94 92 112 64 120 C36 112 16 94 16 64 V24 Z"
+        fill="url(#shield)" stroke="#1c3f6e" stroke-width="2"/>
+  <circle cx="64" cy="54" r="16" fill="#f6f5f4"/>
+  <path d="M58 66 h12 l6 26 h-10 l-2 -12 -2 12 h-10 z" fill="#f6f5f4"/>
+  <path d="M40 96 c8 -6 40 -6 48 0" fill="none" stroke="#f6f5f4"
+        stroke-width="6" stroke-linecap="round" opacity="0.4"/>
+</svg>

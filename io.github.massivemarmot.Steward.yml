@@ -1,0 +1,26 @@
+app-id: io.github.massivemarmot.Steward
+runtime: org.gnome.Platform
+runtime-version: "48"
+sdk: org.gnome.Sdk
+command: steward
+
+# The only privilege is read/write access to the snapd socket.
+# Steward uses it to list snaps and to add or remove path-permission rules.
+finish-args:
+  - --socket=wayland
+  - --filesystem=/run/snapd.socket
+
+modules:
+  - name: steward
+    buildsystem: simple
+    build-commands:
+      - install -Dm644 -t /app/share/steward main.py snapd_client.py path_validation.py
+      - install -Dm755 steward-launcher /app/bin/steward
+      - install -Dm644 data/io.github.massivemarmot.Steward.desktop /app/share/applications/io.github.massivemarmot.Steward.desktop
+      - install -Dm644 data/io.github.massivemarmot.Steward.metainfo.xml /app/share/metainfo/io.github.massivemarmot.Steward.metainfo.xml
+      - install -Dm644 data/icons/hicolor/scalable/apps/io.github.massivemarmot.Steward.svg /app/share/icons/hicolor/scalable/apps/io.github.massivemarmot.Steward.svg
+      - install -Dm644 data/icons/hicolor/symbolic/apps/io.github.massivemarmot.Steward-symbolic.svg /app/share/icons/hicolor/symbolic/apps/io.github.massivemarmot.Steward-symbolic.svg
+      - install -Dm644 icons/hicolor/scalable/actions/funnel-symbolic.svg /app/share/icons/hicolor/scalable/actions/funnel-symbolic.svg
+    sources:
+      - type: dir
+        path: .

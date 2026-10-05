@@ -4,7 +4,7 @@ __pycache__/
 # Flatpak build output
 .flatpak/
 .flatpak-builder/
-build/
+build-dir/
 repo/
 *.flatpak
 *.flatpak.bundle

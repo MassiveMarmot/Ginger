@@ -9,11 +9,14 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from path_validation import is_broad_pattern, normalize_pattern
-from snapd_client import PROMPTING_NOT_RUNNING, Client, SnapdError
+from snapd_client import (PROMPTING_NOT_RUNNING, RULE_NOT_FOUND,
+                          Client, SnapdError)
 
 NOT_RUNNING_TEXT = ("Install the prompting-client snap and enable the "
                     "toggle in Security Center (App permissions tab).")
 APP_ID = "io.github.massivemarmot.Steward"
+VERSION = "0.1.0"
+REPO_URL = "https://github.com/MassiveMarmot/SnapSteward"
 FUNNEL_ICON = "funnel-symbolic"
 
 ICONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -127,8 +130,10 @@ class Window(Adw.ApplicationWindow):
 
     def show_about(self):
         Adw.AboutDialog(application_name="Steward",
-                        application_icon=APP_ID, version="0.1",
-                        comments="View and manage snap path permissions.",
+                        application_icon=APP_ID, version=VERSION,
+                        comments="Manage your Snaps",
+                        website=REPO_URL,
+                        issue_url=REPO_URL + "/issues",
                         license_type=Gtk.License.GPL_3_0).present(self)
 
     def on_page_selected(self, box, row):
@@ -397,14 +402,18 @@ class Window(Adw.ApplicationWindow):
         box.append(perms_card)
         self.detail_bin.set_child(box)
 
-    def permission_row(self, rule):
-        pattern = str(self.rule_constraints(rule).get("path-pattern") or "?")
+    def permission_line(self, rule):
         perms = self.rule_constraints(rule).get("permissions")
         perms = perms if isinstance(perms, dict) else {}
-        subtitle = "  ".join(
+        return "  ".join(
             "%s: %s / %s" % (n, s.get("outcome"), s.get("lifespan"))
-            for n, s in perms.items() if isinstance(s, dict))
-        row = Adw.ActionRow(title=pattern, subtitle=subtitle or "no permissions",
+            for n, s in perms.items() if isinstance(s, dict)) or \
+            "no permissions"
+
+    def permission_row(self, rule):
+        pattern = str(self.rule_constraints(rule).get("path-pattern") or "?")
+        row = Adw.ActionRow(title=pattern,
+                            subtitle=self.permission_line(rule),
                             use_markup=False)
         if is_broad_pattern(pattern):
             row.add_suffix(Gtk.Image(
@@ -416,15 +425,17 @@ class Window(Adw.ApplicationWindow):
                            sensitive=bool(rule_id))
         if rule_id:
             trash.connect("clicked", self.on_remove_rule_clicked,
-                          str(rule_id), pattern)
+                          str(rule_id), rule)
         row.add_suffix(trash)
         return row
 
-    def on_remove_rule_clicked(self, button, rule_id, pattern):
+    def on_remove_rule_clicked(self, button, rule_id, rule):
         alert = Adw.AlertDialog(
             heading="Remove this rule?",
-            body="%s would no longer be allowed to read %s."
-                 % (self.selected_snap, pattern))
+            body="%s\n%s\n%s"
+                 % (self.selected_snap,
+                    self.rule_constraints(rule).get("path-pattern") or "?",
+                    self.permission_line(rule)))
         alert.add_response("cancel", "Cancel")
         alert.add_response("remove", "Remove")
         alert.set_response_appearance(
@@ -434,14 +445,14 @@ class Window(Adw.ApplicationWindow):
     def on_remove_confirmed(self, source, result, rule_id):
         if source.choose_finish(result) != "remove":
             return
-        source.set_response_enabled("remove", False)
         try:
             self.client.remove_rule(rule_id)
         except SnapdError as e:
-            error = Adw.AlertDialog(heading="Could not remove rule",
-                                    body=e.message)
-            error.add_response("ok", "OK")
-            error.present(self)
+            if e.kind != RULE_NOT_FOUND:
+                error = Adw.AlertDialog(heading="Could not remove rule",
+                                        body=e.message)
+                error.add_response("ok", "OK")
+                error.present(self)
         self.load()
 
     def on_add_rule_clicked(self, button):
