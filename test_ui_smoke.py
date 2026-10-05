@@ -11,10 +11,10 @@ from test_snapd_client import MockSnapd, RULE  # noqa: E402
 import snapd_client  # noqa: E402
 from snapd_client import PROMPTING_NOT_RUNNING  # noqa: E402
 
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
 SNAP_APP = {"name": "firefox", "type": "app", "version": "1.0",
-            "summary": "Browse the web"}
+            "summary": "Browse the web", "apps": [{"name": "firefox"}]}
 SNAP_BASE = {"name": "core24", "type": "base", "version": "2"}
 
 
@@ -80,6 +80,92 @@ class UISmokeTests(unittest.TestCase):
             yield from self.walk(child)
             child = child.get_next_sibling()
 
+    def test_funnel_icon_loads(self):
+        self.make_window()
+        theme = Gtk.IconTheme.get_for_display(self.win.get_display())
+        self.assertTrue(theme.has_icon("funnel-symbolic"))
+        self.assertEqual(self.win.filter_button.get_icon_name(),
+                         "funnel-symbolic")
+
+    def test_summary_ellipsizes_at_end(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
+        summary = [l for l in self.find_labels(win.detail_bin.get_child(), [])
+                   if l.get_text() == "Browse the web"][0]
+        self.assertEqual(summary.get_ellipsize(), Pango.EllipsizeMode.END)
+
+    def test_auto_select_does_not_reveal_content(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        win.detail_split.set_collapsed(True)
+        win.detail_split.set_show_content(False)
+        win.load()
+        self.assertEqual(win.selected_snap, "firefox")
+        self.assertFalse(win.detail_split.get_show_content())
+        win.on_snap_selected(win.snaps_list,
+                             win.snaps_list.get_row_at_index(0))
+        self.assertTrue(win.detail_split.get_show_content())
+
+    def test_info_rows_use_property_look(self):
+        self.server.rules = [dict(RULE)]
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
+        rows = [r for r in self.walk(win.detail_bin.get_child())
+                if isinstance(r, Adw.ActionRow)]
+        titles = [r.get_title() for r in rows]
+        for title in ("Snap name", "Version", "Rules"):
+            row = rows[titles.index(title)]
+            self.assertIn("property", row.get_css_classes(), title)
+            self.assertTrue(row.get_subtitle(), title)
+
+    def test_add_rule_button_is_compact_pill(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
+        buttons = [b for b in self.walk(win.detail_bin.get_child())
+                   if isinstance(b, Gtk.Button)]
+        add = [b for b in buttons
+               if any("Add Rule" in l.get_text()
+                      for l in self.find_labels(b, []))][0]
+        self.assertEqual(add.get_halign(), Gtk.Align.CENTER)
+        self.assertFalse(add.get_sensitive())
+
+    def test_apps_empty_snap_hidden(self):
+        lib = {"name": "gtk-common-themes", "type": "app", "apps": []}
+        self.server.snaps = [dict(SNAP_APP), lib]
+        win = self.make_window()
+        names = [t[0] for t in self.row_texts(win)]
+        self.assertNotIn("gtk-common-themes", names)
+        win.lib_check.set_active(True)
+        names = [t[0] for t in self.row_texts(win)]
+        self.assertIn("gtk-common-themes", names)
+
+    def test_no_apps_field_behaves_like_empty(self):
+        lib = {"name": "gtk-common-themes", "type": "app"}
+        self.server.snaps = [dict(SNAP_APP), lib]
+        win = self.make_window()
+        names = [t[0] for t in self.row_texts(win)]
+        self.assertNotIn("gtk-common-themes", names)
+
+    def test_snap_with_rule_never_hidden(self):
+        lib = {"name": "gtk-common-themes", "type": "app", "apps": []}
+        self.server.rules = [dict(RULE, snap="gtk-common-themes")]
+        self.server.snaps = [dict(SNAP_APP), lib]
+        win = self.make_window()
+        names = [t[0] for t in self.row_texts(win)]
+        self.assertIn("gtk-common-themes", names)
+
+    def test_markup_in_version_not_parsed(self):
+        snap = dict(SNAP_APP, version="<b>evil</b>&amp;")
+        self.server.snaps = [snap]
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
+        texts = [l.get_text() for l in
+                 self.find_labels(win.detail_bin.get_child(), [])]
+        self.assertIn("<b>evil</b>&amp;", texts)
+
     def test_sidebar_single_entry(self):
         win = self.make_window()
         row = win.sidebar_rows.get_row_at_index(0)
@@ -88,7 +174,7 @@ class UISmokeTests(unittest.TestCase):
     def test_list_includes_snaps_without_rules(self):
         self.server.rules = [dict(RULE)]
         self.server.snaps = [dict(SNAP_APP), dict(SNAP_BASE),
-                             {"name": "nicotine-plus", "type": "app"}]
+                             {"name": "nicotine-plus", "type": "app", "apps": [{"name": "nicotine-plus"}]}]
         win = self.make_window()
         texts = self.row_texts(win)
         names = [t[0] for t in texts]
@@ -129,7 +215,7 @@ class UISmokeTests(unittest.TestCase):
 
     def test_search_by_name(self):
         self.server.snaps = [dict(SNAP_APP),
-                             {"name": "thunderbird", "type": "app"}]
+                             {"name": "thunderbird", "type": "app", "apps": [{"name": "thunderbird"}]}]
         win = self.make_window()
         win.query = "thunder"
         win.refresh_list()
@@ -140,7 +226,7 @@ class UISmokeTests(unittest.TestCase):
     def test_filter_only_with_rules(self):
         self.server.rules = [dict(RULE)]
         self.server.snaps = [dict(SNAP_APP),
-                             {"name": "thunderbird", "type": "app"}]
+                             {"name": "thunderbird", "type": "app", "apps": [{"name": "thunderbird"}]}]
         win = self.make_window()
         win.filter_check.set_active(True)
         texts = self.row_texts(win)
@@ -199,7 +285,7 @@ class UISmokeTests(unittest.TestCase):
 
     def test_selection_and_query_survive_refresh(self):
         self.server.snaps = [dict(SNAP_APP),
-                             {"name": "thunderbird", "type": "app"}]
+                             {"name": "thunderbird", "type": "app", "apps": [{"name": "thunderbird"}]}]
         win = self.make_window()
         win.on_snap_selected(win.snaps_list,
                              win.snaps_list.get_row_at_index(1))
@@ -258,7 +344,7 @@ class UISmokeTests(unittest.TestCase):
         self.assertEqual(win.error_page.get_title(), "Could not reach snapd")
 
     def test_markup_in_snap_name_not_parsed(self):
-        self.server.snaps = [{"name": "<b>evil</b>&amp;", "type": "app"}]
+        self.server.snaps = [{"name": "<b>evil</b>&amp;", "type": "app", "apps": [{"name": "x"}]}]
         win = self.make_window()
         texts = self.row_texts(win)
         self.assertEqual(texts[0][0], "<b>evil</b>&amp;")
@@ -271,7 +357,8 @@ class UISmokeTests(unittest.TestCase):
     def test_minimal_snap_object(self):
         self.server.snaps = [{"name": "x"}]
         win = self.make_window()
-        self.assertEqual(self.row_texts(win), [["x", "No rules"]])
+        self.assertEqual(self.row_texts(win), [])
+        self.assertIsNone(win.selected_snap)
 
     def run_until(self, condition, timeout_ms=2000):
         ctx = GLib.MainContext.default()
