@@ -11,7 +11,7 @@ from gi.repository import Adw, Gio, GLib, GObject, Gtk
 try:
     resource = Gio.Resource.load(
         os.path.join(os.path.dirname(__file__), "icons",
-                     "snap-path-permissions.gresource"))
+                     "steward.gresource"))
     Gio.resources_register(resource)
 except (OSError, GLib.Error):
     pass
@@ -21,13 +21,13 @@ from snapd_client import PROMPTING_NOT_RUNNING, Client, SnapdError
 
 NOT_RUNNING_TEXT = ("Install the prompting-client snap and enable the "
                     "toggle in Security Center (App permissions tab).")
-APP_ID = "io.github.massivemarmot.SnapPathPermissions"
+APP_ID = "io.github.massivemarmot.Steward"
 FUNNEL_ICON = "resource://%s/icons/funnel-symbolic.svg" % APP_ID
 
 
 class Window(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Snap Path Permissions",
+        super().__init__(application=app, title="Steward",
                          default_width=921, default_height=450)
         self.client = Client()
         self.rules = []
@@ -120,7 +120,7 @@ class Window(Adw.ApplicationWindow):
             self.sidebar_rows.append(row)
 
     def show_about(self):
-        Adw.AboutDialog(application_name="Snap Path Permissions",
+        Adw.AboutDialog(application_name="Steward",
                         application_icon=APP_ID, version="0.1",
                         comments="View and manage snap path permissions.",
                         license_type=Gtk.License.GPL_3_0).present(self)
