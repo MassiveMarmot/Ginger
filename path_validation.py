@@ -8,11 +8,13 @@ def _home():
     return pwd.getpwuid(os.getuid()).pw_dir
 
 
-def expand_home(pattern):
+def expand_home(pattern, home=None):
+    if home is None:
+        home = _home()
     if pattern == "~":
-        return _home()
+        return home
     if pattern.startswith("~/"):
-        return _home() + pattern[1:]
+        return home + pattern[1:]
     return pattern
 
 
@@ -31,7 +33,10 @@ def normalize_pattern(pattern):
     return pattern, None
 
 
-def is_broad_pattern(pattern):
-    stem = expand_home(pattern).rstrip("*/")
-    home = _home()
-    return home == stem or home.startswith(stem + "/")
+def is_broad_pattern(pattern, home=None):
+    stem = expand_home(pattern, home).rstrip("*/")
+    if home is None:
+        home = _home()
+    if home == stem or home.startswith(stem + "/"):
+        return True
+    return stem in ("/home", "/home/*")

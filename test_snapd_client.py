@@ -209,17 +209,20 @@ class ValidationTests(unittest.TestCase):
     def test_broad_patterns(self):
         self.assertTrue(is_broad_pattern("/**"))
         self.assertTrue(is_broad_pattern("/home/**"))
-        self.assertTrue(is_broad_pattern("~/**"))
-        self.assertTrue(is_broad_pattern("/tmp/**")
-                        is False or True)  # /tmp is not under home
+        self.assertTrue(is_broad_pattern("~/**", home="/home/user"))
+        self.assertTrue(is_broad_pattern("~/**", home="/root"))
+        self.assertFalse(is_broad_pattern("/tmp/**", home="/home/user"))
 
     def test_broad_pattern_bypasses(self):
         for pattern in ["/*/**", "/home/*/**", "/**/*"]:
-            self.assertTrue(is_broad_pattern(pattern), pattern)
-        self.assertFalse(is_broad_pattern("/ho*/user/**"))
+            self.assertTrue(is_broad_pattern(pattern, home="/home/user"),
+                            pattern)
+        self.assertTrue(is_broad_pattern("/home/*/**", home="/root"))
+        self.assertFalse(is_broad_pattern("/ho*/user/**", home="/home/user"))
 
     def test_narrow_pattern(self):
-        self.assertFalse(is_broad_pattern("/home/user/docs/**"))
+        self.assertFalse(is_broad_pattern("/home/user/docs/**",
+                                         home="/home/user"))
 
 
 if __name__ == "__main__":
