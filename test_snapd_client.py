@@ -30,6 +30,7 @@ class MockSnapd:
         self.socket_path = socket_path
         self.rules = []
         self.snaps = []
+        self.posts = []  # (path, parsed_json_body) in order
         self.responses = []  # (status, body) overrides, consumed in order
         self.running = True
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -81,6 +82,7 @@ class MockSnapd:
             status, payload = 200, {"type": "sync", "status-code": 200,
                                     "result": self.rules}
         elif method == "POST" and path == "/v2/interfaces/requests/rules":
+            self.posts.append((path, json.loads(body)))
             rule = json.loads(body)["rule"]
             rule["id"] = str(len(self.rules) + 1)
             self.rules.append(rule)
@@ -207,21 +209,24 @@ class ValidationTests(unittest.TestCase):
             self.assertIsNotNone(normalize_pattern(bad)[1], bad)
 
     def test_broad_patterns(self):
-        self.assertTrue(is_broad_pattern("/**"))
-        self.assertTrue(is_broad_pattern("/home/**"))
+        self.assertTrue(is_broad_pattern("/**", home="/home/user"))
+        self.assertTrue(is_broad_pattern("/home/**", home="/home/user"))
         self.assertTrue(is_broad_pattern("~/**", home="/home/user"))
         self.assertTrue(is_broad_pattern("~/**", home="/root"))
         self.assertFalse(is_broad_pattern("/tmp/**", home="/home/user"))
 
     def test_broad_pattern_bypasses(self):
-        for pattern in ["/*/**", "/home/*/**", "/**/*"]:
+        for pattern in ["/*/**", "/home/*/**", "/**/*", "/home/us*/**",
+                        "/*/user/**", "/h*/**", "/home/u?er/**",
+                        "/ho*/user/**"]:
             self.assertTrue(is_broad_pattern(pattern, home="/home/user"),
                             pattern)
         self.assertTrue(is_broad_pattern("/home/*/**", home="/root"))
-        self.assertFalse(is_broad_pattern("/ho*/user/**", home="/home/user"))
 
     def test_narrow_pattern(self):
         self.assertFalse(is_broad_pattern("/home/user/docs/**",
+                                         home="/home/user"))
+        self.assertFalse(is_broad_pattern("/home/*/Documents/**",
                                          home="/home/user"))
 
 
