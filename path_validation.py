@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import os
 import pwd
+import re
 import unicodedata
 
 
@@ -33,10 +34,28 @@ def normalize_pattern(pattern):
     return pattern, None
 
 
+def _glob_regex(pattern):
+    parts = []
+    for i, c in enumerate(pattern):
+        if pattern[i:i + 2] == "**":
+            continue
+        if pattern[i - 1:i + 1] == "**":
+            parts.append(".*")
+        elif c == "*":
+            parts.append("[^/]*")
+        elif c == "?":
+            parts.append("[^/]")
+        else:
+            parts.append(re.escape(c))
+    return re.compile("^" + "".join(parts) + "$")
+
+
 def is_broad_pattern(pattern, home=None):
-    stem = expand_home(pattern, home).rstrip("*/")
     if home is None:
         home = _home()
-    if home == stem or home.startswith(stem + "/"):
+    expanded = expand_home(pattern, home)
+    if expanded.rstrip("*/") in ("/home", "/home/*"):
         return True
-    return stem in ("/home", "/home/*")
+    regex = _glob_regex(expanded)
+    return (regex.match(home) is not None
+            or regex.match(home + "/x") is not None)

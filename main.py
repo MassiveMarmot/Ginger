@@ -8,7 +8,7 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
-from path_validation import is_broad_pattern
+from path_validation import is_broad_pattern, normalize_pattern
 from snapd_client import PROMPTING_NOT_RUNNING, Client, SnapdError
 
 NOT_RUNNING_TEXT = ("Install the prompting-client snap and enable the "
@@ -41,7 +41,6 @@ class Window(Adw.ApplicationWindow):
         self.query = ""
         self.only_with_rules = False
         self.show_libraries = False
-        register_icon_search_path()
 
         self.sidebar_rows = Gtk.ListBox(css_classes=["navigation-sidebar"])
         self.sidebar_rows.connect("row-activated", self.on_page_selected)
@@ -358,8 +357,13 @@ class Window(Adw.ApplicationWindow):
             box.append(summary)
         add_button = Gtk.Button(label="Add Rule",
                                 css_classes=["suggested-action", "pill"],
-                                sensitive=False, halign=Gtk.Align.CENTER)
+                                sensitive=not snap.get("not_installed"),
+                                halign=Gtk.Align.CENTER)
+        if snap.get("not_installed"):
+            add_button.set_tooltip_text(
+                "This snap is not installed, so it has no rules to add")
         add_button.set_valign(Gtk.Align.CENTER)
+        add_button.connect("clicked", self.on_add_rule_clicked)
         box.append(add_button)
         card = Adw.PreferencesGroup()
         snap_name_row = Adw.ActionRow(title="Snap name", use_markup=False,
@@ -410,6 +414,9 @@ class Window(Adw.ApplicationWindow):
                            css_classes=["flat"], sensitive=False)
         row.add_suffix(trash)
         return row
+
+    def on_add_rule_clicked(self, button):
+        AddRuleDialog(self, self.selected_snap).present()
 
     def copy_text(self, button, text):
         self.get_clipboard().set_text(text)
@@ -463,9 +470,105 @@ class Window(Adw.ApplicationWindow):
         self.add_breakpoint(b2)
 
 
+class AddRuleDialog(Adw.Dialog):
+    def __init__(self, window, snap_name):
+        super().__init__(title="Add rule for %s" % snap_name,
+                         width_request=360)
+        self.window = window
+        self.snap_name = snap_name
+        self.pattern = None
+        self.confirmed_broad = False
+
+        self.entry_row = Adw.EntryRow(title="Path pattern")
+        self.entry_row.connect("changed", self.on_entry_changed)
+        self.error_label = Gtk.Label(use_markup=False, wrap=True,
+                                     css_classes=["error"])
+        self.preview_label = Gtk.Label(use_markup=False, wrap=True,
+                                        css_classes=["dim-label"])
+        info = Gtk.Label(label="Read access, allow, forever", use_markup=False,
+                         css_classes=["dim-label"], halign=Gtk.Align.START)
+
+        self.add_button = Gtk.Button(label="Add",
+                                     css_classes=["suggested-action"],
+                                     sensitive=False)
+        self.add_button.connect("clicked", self.on_add_clicked)
+        cancel = Gtk.Button(label="Cancel")
+        cancel.connect("clicked", lambda b: self.close())
+
+        header = Adw.HeaderBar()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                      margin_top=12, margin_bottom=12,
+                      margin_start=12, margin_end=12)
+        box.append(self.entry_row)
+        box.append(self.error_label)
+        box.append(self.preview_label)
+        box.append(info)
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6,
+                          halign=Gtk.Align.END)
+        buttons.append(cancel)
+        buttons.append(self.add_button)
+        box.append(buttons)
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        view.set_content(box)
+        self.set_child(view)
+
+    def on_entry_changed(self, entry):
+        text = entry.get_text()
+        if not text:
+            self.pattern = None
+            self.error_label.set_text("")
+            self.preview_label.set_text("")
+            self.add_button.set_sensitive(False)
+            return
+        pattern, error = normalize_pattern(text)
+        if error is not None:
+            self.pattern = None
+            self.error_label.set_text(error)
+            self.preview_label.set_text("")
+            self.add_button.set_sensitive(False)
+            return
+        self.pattern = pattern
+        self.error_label.set_text("")
+        self.preview_label.set_text("Will add: %s" % pattern)
+        self.add_button.set_sensitive(True)
+
+    def on_add_clicked(self, button):
+        if self.pattern is None:
+            return
+        if is_broad_pattern(self.pattern) and not self.confirmed_broad:
+            alert = Adw.AlertDialog(heading="This pattern covers your whole "
+                                           "home folder",
+                                    body="Anyone reading this rule can read "
+                                         "your entire home folder.")
+            alert.add_response("cancel", "Cancel")
+            alert.add_response("add", "Add anyway")
+            alert.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED)
+            alert.choose(self, None, self.on_broad_response, None)
+            return
+        self.submit()
+
+    def on_broad_response(self, source, result, _):
+        if source.choose_finish(result) == "add":
+            self.confirmed_broad = True
+            self.submit()
+
+    def submit(self):
+        self.add_button.set_sensitive(False)
+        try:
+            self.window.client.add_rule(self.snap_name, self.pattern)
+        except SnapdError as e:
+            self.error_label.set_text(e.message)
+            self.add_button.set_sensitive(True)
+            return
+        self.close()
+        self.window.load()
+
+
 class App(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID)
+        register_icon_search_path()
 
     def do_activate(self):
         win = self.props.active_window

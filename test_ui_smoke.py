@@ -44,6 +44,7 @@ class UISmokeTests(unittest.TestCase):
             app.register()
         self.server.rules = []
         self.server.snaps = []
+        self.server.posts = []
         self.server.responses = []
         self.win = self.main.Window(self.app)
         self.win.present()
@@ -120,6 +121,172 @@ class UISmokeTests(unittest.TestCase):
             self.assertIn("property", row.get_css_classes(), title)
             self.assertTrue(row.get_subtitle(), title)
 
+    def add_dialog(self, win):
+        buttons = [b for b in self.walk(win.detail_bin.get_child())
+                   if isinstance(b, Gtk.Button)]
+        add = [b for b in buttons
+               if any("Add Rule" in l.get_text()
+                      for l in self.find_labels(b, []))][0]
+        add.emit("clicked")
+        ctx = GLib.MainContext.default()
+        for _ in range(5):
+            ctx.iteration(False)
+        dialogs = []
+        for w in Gtk.Window.list_toplevels():
+            if w is win:
+                continue
+            dialogs += [d for d in self.walk(w) if isinstance(d, Adw.Dialog)]
+        return add, dialogs[0] if dialogs else None
+
+    def find_alert(self):
+        ctx = GLib.MainContext.default()
+        for _ in range(10):
+            found = []
+            for w in Gtk.Window.list_toplevels():
+                found += [d for d in self.walk(w)
+                          if isinstance(d, Adw.AlertDialog)]
+            if found:
+                return found[0]
+            ctx.iteration(False)
+        return None
+
+    def test_add_rule_dialog_opens(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        _, dialog = self.add_dialog(win)
+        self.assertIsInstance(dialog, Adw.Dialog)
+        self.assertIn("firefox", dialog.get_title())
+        self.assertFalse(dialog.add_button.get_sensitive())
+        if dialog in [d for w in Gtk.Window.list_toplevels()
+                      for d in self.walk(w)
+                      if isinstance(d, Adw.Dialog)]:
+            dialog.force_close()
+
+    def test_add_rule_disabled_for_not_installed(self):
+        self.server.rules = [dict(RULE, snap="gone")]
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list,
+                             win.snaps_list.get_row_at_index(1))
+        buttons = [b for b in self.walk(win.detail_bin.get_child())
+                   if isinstance(b, Gtk.Button)]
+        add = [b for b in buttons
+               if any("Add Rule" in l.get_text()
+                      for l in self.find_labels(b, []))][0]
+        self.assertFalse(add.get_sensitive())
+        self.assertIn("not installed", add.get_tooltip_text())
+
+    def test_add_rule_validation(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        _, dialog = self.add_dialog(win)
+        for bad, message in [("", ""),
+                             ("relative/path", "absolute"),
+                             ("/a/../b", "'..'"),
+                             ("/a\nb", "control")]:
+            dialog.entry_row.set_text(bad)
+            self.assertFalse(dialog.add_button.get_sensitive(), bad)
+            if message:
+                self.assertIn(message, dialog.error_label.get_text(), bad)
+        home = os.path.expanduser("~")
+        dialog.entry_row.set_text("~/docs/**")
+        self.assertTrue(dialog.add_button.get_sensitive())
+        self.assertEqual(dialog.preview_label.get_text(),
+                         "Will add: %s/docs/**" % home)
+        if dialog in [d for w in Gtk.Window.list_toplevels()
+                      for d in self.walk(w)
+                      if isinstance(d, Adw.Dialog)]:
+            dialog.force_close()
+
+    def test_add_rule_submits(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        _, dialog = self.add_dialog(win)
+        dialog.entry_row.set_text("/home/user/docs/**")
+        dialog.add_button.emit("clicked")
+        self.run_until(lambda: self.server.posts)
+        self.assertEqual(len(self.server.posts), 1)
+        path, body = self.server.posts[0]
+        self.assertEqual(path, "/v2/interfaces/requests/rules")
+        self.assertEqual(body, {
+            "action": "add",
+            "rule": {
+                "snap": "firefox",
+                "interface": "home",
+                "constraints": {
+                    "path-pattern": "/home/user/docs/**",
+                    "permissions": {
+                        "read": {"outcome": "allow", "lifespan": "forever"},
+                    },
+                },
+            },
+        })
+        self.run_until(lambda: win.selected_snap == "firefox"
+                       and "1 rule" in [l.get_text() for l in
+                                         self.find_labels(win.snaps_list
+                                                          .get_row_at_index(0),
+                                                          [])])
+        self.assertEqual(win.selected_snap, "firefox")
+
+    def test_add_rule_snapd_error_inline(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        _, dialog = self.add_dialog(win)
+        self.server.responses.append((400, {
+            "type": "error", "status-code": 400,
+            "result": {"message": "<b>conflict</b>&amp;",
+                       "kind": "interfaces-requests-rule-conflict"},
+        }))
+        dialog.entry_row.set_text("/home/user/docs/**")
+        dialog.add_button.emit("clicked")
+        self.run_until(lambda: dialog.error_label.get_text() != "")
+        self.assertEqual(dialog.error_label.get_text(), "<b>conflict</b>&amp;")
+        self.assertTrue(dialog.get_visible())
+        self.assertTrue(dialog.add_button.get_sensitive())
+        dialog.entry_row.set_text("/home/user/other/**")
+        self.server.rules = [dict(RULE)]
+        dialog.add_button.emit("clicked")
+        self.run_until(lambda: self.server.posts)
+        self.assertEqual(len(self.server.posts), 1)
+        if dialog in [d for w in Gtk.Window.list_toplevels()
+                      for d in self.walk(w)
+                      if isinstance(d, Adw.Dialog)]:
+            dialog.force_close()
+
+    def test_add_rule_broad_confirm(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        _, dialog = self.add_dialog(win)
+        dialog.entry_row.set_text("~/**")
+        dialog.add_button.emit("clicked")
+        alert = self.find_alert()
+        self.assertIsNotNone(alert)
+        self.assertEqual(self.server.posts, [])
+        alert.emit("response", "add")
+        self.run_until(lambda: self.server.posts)
+        self.assertEqual(len(self.server.posts), 1)
+        if dialog in [d for w in Gtk.Window.list_toplevels()
+                      for d in self.walk(w)
+                      if isinstance(d, Adw.Dialog)]:
+            dialog.force_close()
+
+    def test_add_rule_broad_cancel(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        win = self.make_window()
+        _, dialog = self.add_dialog(win)
+        dialog.entry_row.set_text("~/**")
+        dialog.add_button.emit("clicked")
+        alert = self.find_alert()
+        self.assertIsNotNone(alert)
+        alert.emit("response", "cancel")
+        self.run_until(lambda: not alert.get_visible())
+        self.assertEqual(self.server.posts, [])
+        self.assertTrue(dialog.add_button.get_sensitive())
+        if dialog in [d for w in Gtk.Window.list_toplevels()
+                      for d in self.walk(w)
+                      if isinstance(d, Adw.Dialog)]:
+            dialog.force_close()
+
     def test_add_rule_button_is_compact_pill(self):
         self.server.snaps = [dict(SNAP_APP)]
         win = self.make_window()
@@ -130,7 +297,7 @@ class UISmokeTests(unittest.TestCase):
                if any("Add Rule" in l.get_text()
                       for l in self.find_labels(b, []))][0]
         self.assertEqual(add.get_halign(), Gtk.Align.CENTER)
-        self.assertFalse(add.get_sensitive())
+        self.assertTrue(add.get_sensitive())
 
     def test_apps_empty_snap_hidden(self):
         lib = {"name": "gtk-common-themes", "type": "app", "apps": []}

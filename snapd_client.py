@@ -32,8 +32,12 @@ class UnixHTTPConnection(http.client.HTTPConnection):
 
     def connect(self):
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(self.timeout)
-        sock.connect(self.socket_path)
+        try:
+            sock.settimeout(self.timeout)
+            sock.connect(self.socket_path)
+        except OSError:
+            sock.close()
+            raise
         self.sock = sock
 
 
