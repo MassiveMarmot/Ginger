@@ -1,35 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import json
 import os
-import pwd
 import socket
 import tempfile
 import threading
 import unittest
-import urllib.parse
 
-from path_validation import is_broad_pattern, normalize_pattern
-from snapd_client import Client, SnapdError, PROMPTING_NOT_RUNNING
-
-RULE = {
-    "id": "1",
-    "timestamp": "2026-10-04T00:00:00Z",
-    "user": 1000,
-    "snap": "firefox",
-    "interface": "home",
-    "constraints": {
-        "path-pattern": "/home/user/docs/**",
-        "permissions": {
-            "read": {"outcome": "allow", "lifespan": "forever"},
-        },
-    },
-}
+from snapd_client import Client, SnapdError
 
 
 class MockSnapd:
     def __init__(self, socket_path):
         self.socket_path = socket_path
-        self.rules = []
         self.snaps = []
         self.posts = []  # (path, parsed_json_body) in order
         self.responses = []  # (status, body) overrides, consumed in order
@@ -79,37 +61,15 @@ class MockSnapd:
     def _handle(self, conn, method, path, body):
         if self.responses:
             status, payload = self.responses.pop(0)
-        elif method == "GET" and path == "/v2/interfaces/requests/rules":
-            status, payload = 200, {"type": "sync", "status-code": 200,
-                                    "result": self.rules}
-        elif method == "POST" and path == "/v2/interfaces/requests/rules":
-            self.posts.append((path, json.loads(body)))
-            rule = json.loads(body)["rule"]
-            rule["id"] = str(len(self.rules) + 1)
-            self.rules.append(rule)
-            status, payload = 200, {"type": "sync", "status-code": 200,
-                                    "result": rule}
         elif method == "GET" and path == "/v2/snaps":
             status, payload = 200, {"type": "sync", "status-code": 200,
                                     "result": self.snaps}
-        elif method == "POST" and path.startswith("/v2/interfaces/requests/rules/"):
-            self.posts.append((path, json.loads(body)))
-            rule_id = urllib.parse.unquote(path.rsplit("/", 1)[1])
-            if any(r.get("id") == rule_id for r in self.rules):
-                self.rules = [r for r in self.rules
-                              if r.get("id") != rule_id]
-                status, payload = 200, {"type": "sync", "status-code": 200,
-                                       "result": None}
-            else:
-                status, payload = 404, {
-                    "type": "error", "status-code": 404,
-                    "result": {"message": "cannot find rule with the given ID",
-                               "kind": "interfaces-requests-rule-not-found"}}
         else:
             status, payload = 404, {"type": "error", "status-code": 404,
                                     "result": {"message": "not found",
                                                "kind": "not-found"}}
-        wire = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        wire = payload if isinstance(payload, bytes) else \
+            json.dumps(payload).encode()
         conn.sendall(("HTTP/1.1 %d X\r\nContent-Length: %d\r\n\r\n"
                       % (status, len(wire))).encode())
         conn.sendall(wire)
@@ -126,52 +86,6 @@ class SnapdClientTests(unittest.TestCase):
         self.server.stop()
         self.tmpdir.cleanup()
 
-    def error_response(self, kind, message="error"):
-        self.server.responses.append((400, {
-            "type": "error", "status-code": 400,
-            "result": {"message": message, "kind": kind},
-        }))
-
-    def test_list_parsing(self):
-        self.server.rules = [RULE]
-        rules = self.client.list_rules()
-        self.assertEqual(rules, [RULE])
-
-    def test_add_success(self):
-        result = self.client.add_rule("firefox", "/home/user/docs/**")
-        self.assertEqual(result["snap"], "firefox")
-        self.assertEqual(self.server.rules[0]["constraints"]["path-pattern"],
-                         "/home/user/docs/**")
-
-    def test_add_error_with_kind(self):
-        self.error_response("interfaces-requests-rule-conflict", "conflict")
-        with self.assertRaises(SnapdError) as ctx:
-            self.client.add_rule("firefox", "/x/**")
-        self.assertEqual(ctx.exception.kind, "interfaces-requests-rule-conflict")
-        self.assertEqual(ctx.exception.message, "conflict")
-
-    def test_remove_success(self):
-        self.server.rules = [dict(RULE)]
-        self.client.remove_rule("1")
-        self.assertEqual(self.server.rules, [])
-
-    def test_remove_rejects_empty_id(self):
-        with self.assertRaises(SnapdError):
-            self.client.remove_rule("")
-
-    def test_remove_quotes_untrusted_id(self):
-        self.server.rules = [dict(RULE, id="a/b?c")]
-        self.client.remove_rule("a/b?c")
-        self.assertEqual(self.server.rules, [])
-        self.assertEqual(self.server.posts[0][0],
-                         "/v2/interfaces/requests/rules/a%2Fb%3Fc")
-
-    def test_prompting_not_running(self):
-        self.error_response(PROMPTING_NOT_RUNNING)
-        with self.assertRaises(SnapdError) as ctx:
-            self.client.list_rules()
-        self.assertEqual(ctx.exception.kind, PROMPTING_NOT_RUNNING)
-
     def test_list_snaps(self):
         self.server.snaps = [{"name": "firefox", "type": "app",
                               "version": "1.0", "summary": "browser"},
@@ -180,65 +94,41 @@ class SnapdClientTests(unittest.TestCase):
         self.assertEqual(len(snaps), 2)
         self.assertEqual(snaps[0]["name"], "firefox")
 
-    def test_connection_failure(self):
-        bad = Client(socket_path=os.path.join(self.tmpdir.name, "missing.socket"))
+    def test_error_with_kind(self):
+        self.server.responses.append((400, {
+            "type": "error", "status-code": 400,
+            "result": {"message": "conflict", "kind": "some-kind"},
+        }))
         with self.assertRaises(SnapdError) as ctx:
-            bad.list_rules()
+            self.client.list_snaps()
+        self.assertEqual(ctx.exception.kind, "some-kind")
+        self.assertEqual(ctx.exception.message, "conflict")
+
+    def test_connection_failure(self):
+        bad = Client(socket_path=os.path.join(self.tmpdir.name,
+                                              "missing.socket"))
+        with self.assertRaises(SnapdError) as ctx:
+            bad.list_snaps()
         self.assertEqual(ctx.exception.kind, "connection-failed")
 
     def test_malformed_json(self):
         self.server.responses.append((200, b"not-json"))
         with self.assertRaises(SnapdError) as ctx:
-            self.client.list_rules()
+            self.client.list_snaps()
         self.assertIn("malformed", ctx.exception.message)
 
     def test_non_dict_json(self):
         self.server.responses.append((200, [1, 2]))
         with self.assertRaises(SnapdError):
-            self.client.list_rules()
+            self.client.list_snaps()
 
     def test_non_dict_error_result(self):
         self.server.responses.append((400, {
             "type": "error", "status-code": 400, "result": "oops",
         }))
         with self.assertRaises(SnapdError) as ctx:
-            self.client.list_rules()
+            self.client.list_snaps()
         self.assertEqual(ctx.exception.message, "snapd error")
-
-
-class ValidationTests(unittest.TestCase):
-    def test_valid(self):
-        self.assertEqual(normalize_pattern("/home/user/docs/**"),
-                         ("/home/user/docs/**", None))
-        pattern, error = normalize_pattern("~/docs/**")
-        self.assertIsNone(error)
-        self.assertTrue(pattern.startswith("/"))
-
-    def test_invalid(self):
-        for bad in ["", "relative/**", "/a\x00b", "/a\nb",
-                    "/a‮/b", "/a/../b"]:
-            self.assertIsNotNone(normalize_pattern(bad)[1], bad)
-
-    def test_broad_patterns(self):
-        self.assertTrue(is_broad_pattern("/**", home="/home/user"))
-        self.assertTrue(is_broad_pattern("/home/**", home="/home/user"))
-        self.assertTrue(is_broad_pattern("~/**", home="/home/user"))
-        self.assertTrue(is_broad_pattern("~/**", home="/root"))
-        self.assertFalse(is_broad_pattern("/tmp/**", home="/home/user"))
-
-    def test_broad_pattern_bypasses(self):
-        for pattern in ["/*/**", "/home/*/**", "/**/*", "/home/us*/**",
-                        "/*/user/**", "/h*/**", "/home/u?er/**",
-                        "/ho*/user/**", "/home/user/**/*"]:
-            self.assertTrue(is_broad_pattern(pattern, home="/home/user"),
-                            pattern)
-        self.assertTrue(is_broad_pattern("/home/*/**", home="/root"))
-
-    def test_narrow_pattern(self):
-        self.assertFalse(is_broad_pattern("/home/user/docs/**",
-                                         home="/home/user"))
-        self.assertFalse(is_broad_pattern("/home/*/Documents/**",
-                                         home="/home/user"))
 
 
 if __name__ == "__main__":

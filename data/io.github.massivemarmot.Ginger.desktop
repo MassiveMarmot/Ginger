@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Steward
-Comment=Manage your Snaps
-Exec=steward
-Icon=io.github.massivemarmot.Steward
+Name=Ginger
+Comment=Ginger for Snaps
+Exec=ginger
+Icon=io.github.massivemarmot.Ginger
 Terminal=false
 Categories=GNOME;GTK;System;
 Keywords=snap;permissions;

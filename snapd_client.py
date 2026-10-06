@@ -3,19 +3,9 @@ import http.client
 import json
 import os
 import socket
-import urllib.parse
+
 
 DEFAULT_SOCKET = "/run/snapd.socket"
-
-# UNVERIFIED: permission names other than "read". Likely "write", "execute".
-PERMISSIONS = ("read", "write", "execute")
-# UNVERIFIED: lifespan values other than "forever" and "session".
-LIFESPANS = ("forever", "session")
-# UNVERIFIED: outcome value "deny".
-OUTCOMES = ("allow", "deny")
-
-PROMPTING_NOT_RUNNING = "apparmor-prompting-not-running"
-RULE_NOT_FOUND = "interfaces-requests-rule-not-found"
 
 
 class SnapdError(Exception):
@@ -74,35 +64,6 @@ class Client:
             raise SnapdError(result.get("message", "snapd error"),
                              kind=result.get("kind"), status_code=resp.status)
         return payload.get("result")
-
-    def list_rules(self):
-        rules = self._request("GET", "/v2/interfaces/requests/rules")
-        if not isinstance(rules, list):
-            raise SnapdError("unexpected rules response")
-        return rules
-
-    def add_rule(self, snap, path_pattern, permission="read",
-                 outcome="allow", lifespan="forever"):
-        body = {
-            "action": "add",
-            "rule": {
-                "snap": snap,
-                "interface": "home",
-                "constraints": {
-                    "path-pattern": path_pattern,
-                    "permissions": {
-                        permission: {"outcome": outcome, "lifespan": lifespan},
-                    },
-                },
-            },
-        }
-        return self._request("POST", "/v2/interfaces/requests/rules", body)
-
-    def remove_rule(self, rule_id):
-        if not rule_id:
-            raise SnapdError("empty rule id")
-        path = "/v2/interfaces/requests/rules/" + urllib.parse.quote(rule_id, safe="")
-        return self._request("POST", path, {"action": "remove"})
 
     def list_snaps(self):
         return self._request("GET", "/v2/snaps")

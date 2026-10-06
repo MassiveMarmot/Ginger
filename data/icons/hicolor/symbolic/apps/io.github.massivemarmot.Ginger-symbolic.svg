@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: GPL-3.0-or-later
-     Original artwork drawn for Steward. -->
+     Original artwork drawn for Ginger. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
   <path d="M8 1 L14 3 V8 C14 12 12 14 8 15 C4 14 2 12 2 8 V3 Z
            M8 4 a2.5 2.5 0 0 0 -1 4.7 L6.2 12 h3.6 L9 8.7 a2.5 2.5 0 0 0 -1 -4.7 Z"

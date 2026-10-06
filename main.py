@@ -8,15 +8,11 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
-from path_validation import is_broad_pattern, normalize_pattern
-from snapd_client import (PROMPTING_NOT_RUNNING, RULE_NOT_FOUND,
-                          Client, SnapdError)
+from snapd_client import Client, SnapdError
 
-NOT_RUNNING_TEXT = ("Install the prompting-client snap and enable the "
-                    "toggle in Security Center (App permissions tab).")
-APP_ID = "io.github.massivemarmot.Steward"
+APP_ID = "io.github.massivemarmot.Ginger"
 VERSION = "0.1.0"
-REPO_URL = "https://github.com/MassiveMarmot/SnapSteward"
+REPO_URL = "https://github.com/MassiveMarmot/Ginger"
 FUNNEL_ICON = "funnel-symbolic"
 
 ICONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -35,14 +31,12 @@ def register_icon_search_path():
 
 class Window(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Steward",
+        super().__init__(application=app, title="Ginger",
                          default_width=921, default_height=450)
         self.client = Client()
-        self.rules = []
         self.snaps = []
         self.selected_snap = None
         self.query = ""
-        self.only_with_rules = False
         self.show_libraries = False
 
         self.sidebar_rows = Gtk.ListBox(css_classes=["navigation-sidebar"])
@@ -129,9 +123,9 @@ class Window(Adw.ApplicationWindow):
             self.sidebar_rows.append(row)
 
     def show_about(self):
-        Adw.AboutDialog(application_name="Steward",
+        Adw.AboutDialog(application_name="Ginger",
                         application_icon=APP_ID, version=VERSION,
-                        comments="Manage your Snaps",
+                        comments="Ginger for Snaps",
                         website=REPO_URL,
                         issue_url=REPO_URL + "/issues",
                         license_type=Gtk.License.GPL_3_0).present(self)
@@ -141,44 +135,22 @@ class Window(Adw.ApplicationWindow):
             self.main_split.set_show_sidebar(False)
         self.page_stack.set_visible_child_name("snaps")
 
-    @staticmethod
-    def rule_constraints(rule):
-        c = rule.get("constraints")
-        return c if isinstance(c, dict) else {}
-
-    def rules_by_snap(self):
-        grouped = {}
-        for rule in self.rules:
-            if isinstance(rule, dict):
-                grouped.setdefault(str(rule.get("snap") or "unknown"),
-                                   []).append(rule)
-        return grouped
-
     def snap_names(self):
-        rules = self.rules_by_snap()
         names = {}
         for s in self.snaps:
             if isinstance(s, dict) and s.get("type") in (None, "app"):
                 snap = dict(s)
                 snap["has_apps"] = bool(s.get("apps"))
                 names[str(s.get("name") or "?")] = snap
-        for name in rules:
-            if name not in names:
-                names[name] = {"name": name, "not_installed": True,
-                               "has_apps": True}
         return names
 
     def visible_snaps(self):
-        rules = self.rules_map
         out = []
         for name in sorted(self.snap_map):
             snap = self.snap_map[name]
-            if not self.show_libraries and not snap.get("not_installed") \
-                    and not snap.get("has_apps") and name not in rules:
+            if not self.show_libraries and not snap.get("has_apps"):
                 continue
             if self.query and self.query.lower() not in name.lower():
-                continue
-            if self.only_with_rules and name not in rules:
                 continue
             out.append(name)
         return out
@@ -240,12 +212,6 @@ class Window(Adw.ApplicationWindow):
         return self.detail_split
 
     def build_filter_panel(self):
-        check = Gtk.CheckButton(css_classes=["selection-mode"])
-        check.connect("toggled", self.on_filter_check_toggled)
-        row = Adw.ActionRow(title="Only snaps with rules",
-                            use_markup=False)
-        row.add_suffix(check)
-        row.set_activatable_widget(check)
         lib_check = Gtk.CheckButton(css_classes=["selection-mode"])
         lib_check.connect("toggled", self.on_lib_check_toggled)
         lib_row = Adw.ActionRow(title="Show libraries and runtimes",
@@ -253,9 +219,7 @@ class Window(Adw.ApplicationWindow):
         lib_row.add_suffix(lib_check)
         lib_row.set_activatable_widget(lib_check)
         group = Adw.PreferencesGroup()
-        group.add(row)
         group.add(lib_row)
-        self.filter_check = check
         self.lib_check = lib_check
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -264,10 +228,6 @@ class Window(Adw.ApplicationWindow):
         scroller.set_child(group)
         view.set_content(scroller)
         return view
-
-    def on_filter_check_toggled(self, check):
-        self.only_with_rules = check.get_active()
-        self.refresh_list()
 
     def on_lib_check_toggled(self, check):
         self.show_libraries = check.get_active()
@@ -290,7 +250,6 @@ class Window(Adw.ApplicationWindow):
 
     def refresh_list(self):
         self.snap_map = self.snap_names()
-        self.rules_map = self.rules_by_snap()
         self.snaps_list.remove_all()
         self.rows_by_name = {}
         for name in self.visible_snaps():
@@ -301,22 +260,10 @@ class Window(Adw.ApplicationWindow):
         self.highlight_selected_row()
 
     def snap_row(self, name):
-        snap = self.snap_map.get(name, {})
-        rules = self.rules_map.get(name, [])
-        count = len(rules)
-        subtitle = "%d rule" % count if count == 1 else ("%d rules" % count if count else "No rules")
-        if snap.get("not_installed"):
-            subtitle += " · Not installed"
-        row = Adw.ActionRow(title=name, subtitle=subtitle, use_markup=False)
+        row = Adw.ActionRow(title=name, use_markup=False)
         row.set_activatable(True)
         row.snap_name = name
         row.add_prefix(Gtk.Image(icon_name="application-x-executable-symbolic"))
-        if any(is_broad_pattern(
-                str(self.rule_constraints(r).get("path-pattern") or ""))
-               for r in rules):
-            row.add_suffix(Gtk.Image(
-                icon_name="dialog-warning-symbolic",
-                tooltip_text="Broad pattern"))
         return row
 
     def highlight_selected_row(self):
@@ -343,7 +290,6 @@ class Window(Adw.ApplicationWindow):
                 icon_name="document-open-symbolic"))
             return
         name = self.selected_snap
-        rules = self.rules_map.get(name, [])
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
                       margin_top=24, margin_bottom=24,
                       margin_start=12, margin_end=12,
@@ -360,16 +306,6 @@ class Window(Adw.ApplicationWindow):
                                 use_markup=False)
             summary.set_text(str(snap.get("summary")))
             box.append(summary)
-        add_button = Gtk.Button(label="Add Rule",
-                                css_classes=["suggested-action", "pill"],
-                                sensitive=not snap.get("not_installed"),
-                                halign=Gtk.Align.CENTER)
-        if snap.get("not_installed"):
-            add_button.set_tooltip_text(
-                "This snap is not installed, so it has no rules to add")
-        add_button.set_valign(Gtk.Align.CENTER)
-        add_button.connect("clicked", self.on_add_rule_clicked)
-        box.append(add_button)
         card = Adw.PreferencesGroup()
         snap_name_row = Adw.ActionRow(title="Snap name", use_markup=False,
                                       css_classes=["property"])
@@ -386,77 +322,8 @@ class Window(Adw.ApplicationWindow):
                 css_classes=["property"],
                 subtitle=str(snap.get("version")))
             card.add(version_row)
-        rules_row = Adw.ActionRow(
-            title="Rules", subtitle="%d" % len(rules), use_markup=False,
-            css_classes=["property"])
-        card.add(rules_row)
         box.append(card)
-        perms_card = Adw.PreferencesGroup(
-            title=GLib.markup_escape_text("Path permissions"))
-        if rules:
-            for rule in rules:
-                perms_card.add(self.permission_row(rule))
-        else:
-            perms_card.add(Adw.ActionRow(
-                title="No path permissions", use_markup=False))
-        box.append(perms_card)
         self.detail_bin.set_child(box)
-
-    def permission_line(self, rule):
-        perms = self.rule_constraints(rule).get("permissions")
-        perms = perms if isinstance(perms, dict) else {}
-        return "  ".join(
-            "%s: %s / %s" % (n, s.get("outcome"), s.get("lifespan"))
-            for n, s in perms.items() if isinstance(s, dict)) or \
-            "no permissions"
-
-    def permission_row(self, rule):
-        pattern = str(self.rule_constraints(rule).get("path-pattern") or "?")
-        row = Adw.ActionRow(title=pattern,
-                            subtitle=self.permission_line(rule),
-                            use_markup=False)
-        if is_broad_pattern(pattern):
-            row.add_suffix(Gtk.Image(
-                icon_name="dialog-warning-symbolic",
-                tooltip_text="Broad pattern"))
-        rule_id = rule.get("id") if isinstance(rule, dict) else None
-        trash = Gtk.Button(icon_name="user-trash-symbolic",
-                           css_classes=["flat"],
-                           sensitive=bool(rule_id))
-        if rule_id:
-            trash.connect("clicked", self.on_remove_rule_clicked,
-                          str(rule_id), rule)
-        row.add_suffix(trash)
-        return row
-
-    def on_remove_rule_clicked(self, button, rule_id, rule):
-        alert = Adw.AlertDialog(
-            heading="Remove this rule?",
-            body="%s\n%s\n%s"
-                 % (self.selected_snap,
-                    self.rule_constraints(rule).get("path-pattern") or "?",
-                    self.permission_line(rule)))
-        alert.add_response("cancel", "Cancel")
-        alert.add_response("remove", "Remove")
-        alert.set_response_appearance(
-            "remove", Adw.ResponseAppearance.DESTRUCTIVE)
-        alert.choose(self, None, self.on_remove_confirmed, rule_id)
-
-    def on_remove_confirmed(self, source, result, rule_id):
-        if source.choose_finish(result) != "remove":
-            return
-        try:
-            self.client.remove_rule(rule_id)
-        except SnapdError as e:
-            if e.kind != RULE_NOT_FOUND:
-                error = Adw.AlertDialog(heading="Could not remove rule",
-                                        body=e.message)
-                error.add_response("ok", "OK")
-                error.present(self)
-        self.load()
-
-    def on_add_rule_clicked(self, button):
-        AddRuleDialog(self, self.selected_snap).present(self)
 
     def copy_text(self, button, text):
         self.get_clipboard().set_text(text)
@@ -469,20 +336,15 @@ class Window(Adw.ApplicationWindow):
 
     def load(self):
         try:
-            rules = self.client.list_rules()
             snaps = self.client.list_snaps()
         except SnapdError as e:
-            if e.kind == PROMPTING_NOT_RUNNING:
-                self.show_error("AppArmor prompting is not enabled",
-                                NOT_RUNNING_TEXT, "security-low-symbolic")
-            elif e.kind == "connection-failed":
+            if e.kind == "connection-failed":
                 self.show_error("Could not reach snapd", e.message,
                                 "network-error-symbolic")
             else:
                 self.show_error("snapd returned an error", e.message,
                                 "dialog-warning-symbolic")
             return
-        self.rules = [r for r in rules if isinstance(r, dict)]
         self.snaps = [s for s in snaps if isinstance(s, dict)]
         if self.selected_snap not in self.snap_names():
             self.selected_snap = None
@@ -508,108 +370,6 @@ class Window(Adw.ApplicationWindow):
         b2.add_setter(self.main_split, "collapsed", True)
         b2.add_setter(self.main_split, "max-sidebar-width", 280)
         self.add_breakpoint(b2)
-
-
-class AddRuleDialog(Adw.Dialog):
-    def __init__(self, window, snap_name):
-        super().__init__(title="Add rule for %s" % snap_name,
-                         width_request=360)
-        self.window = window
-        self.snap_name = snap_name
-        self.pattern = None
-        self.confirmed_broad = False
-
-        self.entry_row = Adw.EntryRow(title="Path pattern")
-        self.entry_row.connect("changed", self.on_entry_changed)
-        self.entry_row.connect("entry-activated", self.on_entry_activated)
-        self.error_label = Gtk.Label(use_markup=False, wrap=True,
-                                     css_classes=["error"])
-        self.preview_label = Gtk.Label(use_markup=False, wrap=True,
-                                        css_classes=["dim-label"])
-        info = Gtk.Label(label="Read access, allow, forever", use_markup=False,
-                         css_classes=["dim-label"], halign=Gtk.Align.START)
-
-        self.add_button = Gtk.Button(label="Add",
-                                     css_classes=["suggested-action"],
-                                     sensitive=False)
-        self.add_button.connect("clicked", self.on_add_clicked)
-        cancel = Gtk.Button(label="Cancel")
-        cancel.connect("clicked", lambda b: self.close())
-
-        header = Adw.HeaderBar()
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
-                      margin_top=12, margin_bottom=12,
-                      margin_start=12, margin_end=12)
-        box.append(self.entry_row)
-        box.append(self.error_label)
-        box.append(self.preview_label)
-        box.append(info)
-        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6,
-                          halign=Gtk.Align.END)
-        buttons.append(cancel)
-        buttons.append(self.add_button)
-        box.append(buttons)
-        view = Adw.ToolbarView()
-        view.add_top_bar(header)
-        view.set_content(box)
-        self.set_child(view)
-
-    def on_entry_changed(self, entry):
-        text = entry.get_text().strip()
-        self.confirmed_broad = False
-        if not text:
-            self.pattern = None
-            self.error_label.set_text("")
-            self.preview_label.set_text("")
-            self.add_button.set_sensitive(False)
-            return
-        pattern, error = normalize_pattern(text)
-        if error is not None:
-            self.pattern = None
-            self.error_label.set_text(error)
-            self.preview_label.set_text("")
-            self.add_button.set_sensitive(False)
-            return
-        self.pattern = pattern
-        self.error_label.set_text("")
-        self.preview_label.set_text("Will add: %s" % pattern)
-        self.add_button.set_sensitive(True)
-
-    def on_entry_activated(self, entry):
-        if self.add_button.get_sensitive():
-            self.on_add_clicked(self.add_button)
-
-    def on_add_clicked(self, button):
-        if self.pattern is None:
-            return
-        if is_broad_pattern(self.pattern) and not self.confirmed_broad:
-            alert = Adw.AlertDialog(
-                heading="This pattern is very broad",
-                body="%s would be allowed to read everything this pattern "
-                    "matches, which includes your whole home folder."
-                    % self.snap_name)
-            alert.add_response("cancel", "Cancel")
-            alert.add_response("add", "Add anyway")
-            alert.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED)
-            alert.choose(self, None, self.on_broad_response, None)
-            return
-        self.submit()
-
-    def on_broad_response(self, source, result, _):
-        if source.choose_finish(result) == "add":
-            self.confirmed_broad = True
-            self.submit()
-
-    def submit(self):
-        self.add_button.set_sensitive(False)
-        try:
-            self.window.client.add_rule(self.snap_name, self.pattern)
-        except SnapdError as e:
-            self.error_label.set_text(e.message)
-            self.add_button.set_sensitive(True)
-            return
-        self.close()
-        self.window.load()
 
 
 class App(Adw.Application):

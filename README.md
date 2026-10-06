@@ -1,15 +1,8 @@
 # Ginger for Snaps
 
 Ginger is a GNOME app that lists the snaps installed on your system and lets
-you review and manage each snap's path permissions (AppArmor prompting
-rules). Its main feature is adding a read permission for a specific path by
-typing or pasting a path pattern.
-
-## Requirements
-
-- Ubuntu with AppArmor prompting enabled:
-  - the `prompting-client` snap installed, and
-  - the toggle turned on in Security Center (App permissions tab).
+you review and change each snap's interface connections: the permissions
+behind snap connect and snap disconnect.
 
 ## Installing the Flatpak bundle
 
@@ -33,10 +26,9 @@ flatpak build-bundle ~/.local/share/flatpak ginger-0.1.0.flatpak io.github.massi
 ## About the socket permission
 
 Ginger's only privilege is read/write access to `/run/snapd.socket`, granted
-with `--filesystem=/run/snapd.socket` in the Flatpak manifest. That socket is
-the administrative interface to snapd: through it, Ginger lists installed
-snaps and adds or removes path-permission rules. It uses that access for
-nothing else, and the app has no network permission at all.
+with `--filesystem=/run/snapd.socket` in the Flatpak manifest. Through it,
+Ginger lists installed snaps and their interface connections. It uses that
+access for nothing else, and the app has no network permission at all.
 
 You can inspect the permission at any time:
 
@@ -54,12 +46,6 @@ flatpak override --user --nofilesystem=/run/snapd.socket io.github.massivemarmot
 
 - No network access, no telemetry, no analytics.
 - Nothing is logged; no files are written outside the app's own data dir.
-
-## Current limits
-
-- Rules are limited to read access, allow outcome, forever lifespan. Rules
-  made elsewhere (for example in Security Center) are listed and can be
-  removed, whatever their type.
 
 ## License
 
