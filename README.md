@@ -67,5 +67,5 @@ GPL-3.0-or-later. See [LICENSE](LICENSE).
 
 This project is developed with AI assistance.
 
-Steward is not affiliated with or endorsed by Canonical. Snap and Ubuntu are
+Ginger is not affiliated with or endorsed by Canonical. Snap and Ubuntu are
 trademarks of Canonical Ltd.
