@@ -156,7 +156,7 @@ class UISmokeTests(unittest.TestCase):
         row = win.sidebar_rows.get_row_at_index(0)
         self.assertEqual(row.page_name, "Snaps")
 
-    def test_list_includes_snaps_without_rules(self):
+    def test_list_includes_snaps(self):
         self.server.snaps = [dict(SNAP_APP), dict(SNAP_BASE),
                              {"name": "nicotine-plus", "type": "app",
                               "apps": [{"name": "nicotine-plus"}]}]

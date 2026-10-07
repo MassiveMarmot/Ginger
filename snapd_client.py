@@ -3,9 +3,14 @@ import http.client
 import json
 import os
 import socket
+import time
+import urllib.parse
 
 
 DEFAULT_SOCKET = "/run/snapd.socket"
+POLL_INTERVAL_START = 0.5
+POLL_INTERVAL_MAX = 2.0
+POLL_TIMEOUT = 60.0
 
 
 class SnapdError(Exception):
@@ -37,12 +42,14 @@ class Client:
         self.socket_path = socket_path or os.environ.get("SNAPD_SOCKET",
                                                          DEFAULT_SOCKET)
 
-    def _request(self, method, path, body=None):
+    def _request(self, method, path, body=None, allow_interaction=False):
         data = json.dumps(body).encode() if body is not None else None
+        headers = {"Content-Type": "application/json"}
+        if allow_interaction:
+            headers["X-Allow-Interaction"] = "true"
         conn = UnixHTTPConnection(self.socket_path)
         try:
-            conn.request(method, path, body=data,
-                         headers={"Content-Type": "application/json"})
+            conn.request(method, path, body=data, headers=headers)
             resp = conn.getresponse()
             raw = resp.read()
         except OSError as e:
@@ -67,3 +74,50 @@ class Client:
 
     def list_snaps(self):
         return self._request("GET", "/v2/snaps")
+
+    def list_connections(self, snap=None, select="all"):
+        query = {"select": select}
+        if snap is not None:
+            query["snap"] = snap
+        path = "/v2/connections?" + urllib.parse.urlencode(query)
+        result = self._request("GET", path)
+        if not isinstance(result, dict):
+            raise SnapdError("unexpected connections response")
+        return result
+
+    def change_interface(self, action, plug_snap, plug, slot_snap, slot):
+        body = {"action": action,
+                "plugs": [{"snap": plug_snap, "plug": plug}],
+                "slots": [{"snap": slot_snap, "slot": slot}]}
+        result = self._request("POST", "/v2/interfaces", body,
+                               allow_interaction=True)
+        if not isinstance(result, dict):
+            raise SnapdError("unexpected change response")
+        return result
+
+    def get_change(self, change_id):
+        path = "/v2/changes/" + urllib.parse.quote(str(change_id), safe="")
+        result = self._request("GET", path)
+        if not isinstance(result, dict):
+            raise SnapdError("unexpected change response")
+        return result
+
+    def wait_for_change(self, change_id, timeout=POLL_TIMEOUT,
+                        sleep=time.sleep, monotonic=time.monotonic):
+        deadline = monotonic() + timeout
+        interval = POLL_INTERVAL_START
+        while True:
+            change = self.get_change(change_id)
+            err = change.get("err")
+            if err:
+                raise SnapdError(str(err), kind="change-error")
+            if change.get("status") == "Done" and change.get("ready"):
+                return change
+            if change.get("ready") or change.get("status") == "Error":
+                raise SnapdError(str(change.get("summary") or "change failed"),
+                                 kind="change-error")
+            if monotonic() >= deadline:
+                raise SnapdError("Timed out waiting for change",
+                                 kind="change-timeout")
+            sleep(interval)
+            interval = min(interval * 2, POLL_INTERVAL_MAX)
