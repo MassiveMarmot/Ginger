@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -143,7 +144,9 @@ class UISmokeTests(unittest.TestCase):
         ctx = GLib.MainContext.default()
         end = GLib.get_monotonic_time() + timeout_ms * 1000
         while not condition() and GLib.get_monotonic_time() < end:
-            ctx.iteration(True)
+            if not ctx.iteration(False):
+                time.sleep(0.01)
+        self.assertTrue(condition(), "run_until timed out")
 
     def test_funnel_icon_loads(self):
         self.make_window()
