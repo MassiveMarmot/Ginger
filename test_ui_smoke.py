@@ -512,7 +512,6 @@ class UISmokeTests(unittest.TestCase):
         self.server.snaps = [dict(SNAP_APP)]
         self.server.default_connections = CONNECTIONS
         data_dir = os.environ["GINGER_DATA_DIR"]
-        os.mkdir(data_dir)
         os.chmod(data_dir, 0o500)
         try:
             win = self.make_window()
@@ -542,8 +541,11 @@ class UISmokeTests(unittest.TestCase):
         self.assertTrue(alert)
         alert[0].emit("response", "forget")
         self.run_until(lambda: not win.baseline_banner.get_revealed())
-        self.assertFalse(os.path.exists(os.path.join(
-            os.environ["GINGER_DATA_DIR"], "baseline.json")))
+        import baseline
+        path = os.path.join(os.environ["GINGER_DATA_DIR"], "baseline.json")
+        self.assertEqual(
+            [c["plug"] for c in baseline.load(path)["firefox"]["connected"]],
+            ["camera", "network", "removable-media"])
         self.assertEqual(len(self.row_texts(win)), 1)
 
     def test_banner_hidden_when_baseline_ok(self):
