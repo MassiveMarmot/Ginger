@@ -539,9 +539,14 @@ class Window(Adw.ApplicationWindow):
         inverse = "disconnect" if action == "connect" else "connect"
         verb = "Connected" if action == "connect" else "Disconnected"
         toast = self.make_toast("%s %s" % (verb, plug))
-        toast.add_button("Undo", "undo")
-        toast.connect("button-clicked", lambda t: self.undo_action(
-            t, snap_name, plug, inverse))
+        if hasattr(toast, "add_button"):
+            toast.add_button("Undo", "undo")
+            toast.connect("button-clicked", lambda t: self.undo_action(
+                t, snap_name, plug, inverse))
+        else:
+            toast.set_button_label("Undo")
+            toast.connect("clicked", lambda t: self.undo_action(
+                t, snap_name, plug, inverse))
         self.last_toast = toast
         self.toast_overlay.add_toast(toast)
 
