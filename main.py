@@ -8,6 +8,8 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
+import baseline
+import interfaces
 from snapd_client import Client, SnapdError
 
 APP_ID = "io.github.massivemarmot.Ginger"
@@ -38,6 +40,10 @@ class Window(Adw.ApplicationWindow):
         self.selected_snap = None
         self.query = ""
         self.show_libraries = False
+        self.show_all_interfaces = False
+        self.connections = {}
+        self.connections_by_snap = {}
+        self.baselines = {}
 
         self.sidebar_rows = Gtk.ListBox(css_classes=["navigation-sidebar"])
         self.sidebar_rows.connect("row-activated", self.on_page_selected)
@@ -218,9 +224,17 @@ class Window(Adw.ApplicationWindow):
                                 use_markup=False)
         lib_row.add_suffix(lib_check)
         lib_row.set_activatable_widget(lib_check)
+        all_check = Gtk.CheckButton(css_classes=["selection-mode"])
+        all_check.connect("toggled", self.on_all_check_toggled)
+        all_row = Adw.ActionRow(title="Show all interfaces",
+                                use_markup=False)
+        all_row.add_suffix(all_check)
+        all_row.set_activatable_widget(all_check)
         group = Adw.PreferencesGroup()
         group.add(lib_row)
+        group.add(all_row)
         self.lib_check = lib_check
+        self.all_check = all_check
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
         view.add_top_bar(header)
@@ -232,6 +246,10 @@ class Window(Adw.ApplicationWindow):
     def on_lib_check_toggled(self, check):
         self.show_libraries = check.get_active()
         self.refresh_list()
+
+    def on_all_check_toggled(self, check):
+        self.show_all_interfaces = check.get_active()
+        self.update_detail()
 
     def on_filter_toggled(self, button):
         active = button.get_active()
@@ -260,7 +278,12 @@ class Window(Adw.ApplicationWindow):
         self.highlight_selected_row()
 
     def snap_row(self, name):
-        row = Adw.ActionRow(title=name, use_markup=False)
+        connections = self.connections_by_snap.get(name)
+        subtitle = ""
+        if connections is not None:
+            connected, available = interfaces.counts(connections, name)
+            subtitle = "%d connected, %d available" % (connected, available)
+        row = Adw.ActionRow(title=name, subtitle=subtitle, use_markup=False)
         row.set_activatable(True)
         row.snap_name = name
         row.add_prefix(Gtk.Image(icon_name="application-x-executable-symbolic"))
@@ -323,7 +346,43 @@ class Window(Adw.ApplicationWindow):
                 subtitle=str(snap.get("version")))
             card.add(version_row)
         box.append(card)
+        connections = self.connections_by_snap.get(name)
+        if connections is not None:
+            box.append(self.permissions_group(name, connections))
         self.detail_bin.set_child(box)
+
+    def permissions_group(self, name, connections):
+        group = Adw.PreferencesGroup(
+            title=GLib.markup_escape_text("Permissions"))
+        plugs = interfaces.derive_plugs(connections, name,
+                                         show_all=self.show_all_interfaces)
+        if not plugs:
+            group.add(Adw.ActionRow(title="No interfaces", use_markup=False))
+            return group
+        for plug in plugs:
+            row = Adw.SwitchRow(title=plug["name"],
+                                subtitle=plug["interface"] + " \u00b7 "
+                                + plug["state"],
+                                use_markup=False)
+            row.set_active(plug["connected"])
+            if plug["connected"]:
+                if plug["conn_slot"] is not None:
+                    row.plug_slot = plug["conn_slot"]
+            elif plug["n_slots"] == 0:
+                row.set_subtitle(plug["interface"] + " \u00b7 No slot available")
+            elif plug["n_slots"] > 1:
+                row.set_subtitle(plug["interface"]
+                                + " \u00b7 Several slots available")
+            elif plug["slot"] is not None:
+                row.plug_slot = plug["slot"]
+            if plug["tier"] == 3 and not plug["connected"]:
+                row.set_subtitle(plug["interface"]
+                                + " \u00b7 " + plug["state"]
+                                + " \u00b7 " + "Connect not offered")
+            row.plug_info = plug
+            row.set_sensitive(False)
+            group.add(row)
+        return group
 
     def copy_text(self, button, text):
         self.get_clipboard().set_text(text)
@@ -337,6 +396,7 @@ class Window(Adw.ApplicationWindow):
     def load(self):
         try:
             snaps = self.client.list_snaps()
+            self.connections = self.client.list_connections()
         except SnapdError as e:
             if e.kind == "connection-failed":
                 self.show_error("Could not reach snapd", e.message,
@@ -345,7 +405,21 @@ class Window(Adw.ApplicationWindow):
                 self.show_error("snapd returned an error", e.message,
                                 "dialog-warning-symbolic")
             return
+        try:
+            self.baselines = baseline.load()
+        except baseline.BaselineError as e:
+            self.baselines = {}
+            self.show_error("Could not read the saved original state",
+                            str(e), "dialog-warning-symbolic")
+            return
         self.snaps = [s for s in snaps if isinstance(s, dict)]
+        self.connections_by_snap = {}
+        for name in self.snap_names():
+            self.connections_by_snap[name] = self.connections
+        new = baseline.capture_new(self.baselines, self.connections_by_snap)
+        if new:
+            self.baselines.update(new)
+            baseline.save_snaps(self.baselines)
         if self.selected_snap not in self.snap_names():
             self.selected_snap = None
         if self.search_entry.get_text() != self.query:
