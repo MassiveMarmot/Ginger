@@ -31,8 +31,8 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--connect", action="store_true")
     group.add_argument("--disconnect", action="store_true")
-    group.add_argument("--yes", action="store_true",
-                       help="actually send the mutation")
+    parser.add_argument("--yes", action="store_true",
+                        help="actually send the mutation")
     args = parser.parse_args()
     action = "connect" if args.connect else "disconnect"
 
