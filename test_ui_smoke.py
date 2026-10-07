@@ -508,6 +508,7 @@ class UISmokeTests(unittest.TestCase):
                             "baseline.json")
         self.assertEqual(open(path).read(), "not-json{")
 
+    @unittest.skipIf(os.geteuid() == 0, "chmod is ineffective as root")
     def test_baseline_save_failure_shows_banner(self):
         self.server.snaps = [dict(SNAP_APP)]
         self.server.default_connections = CONNECTIONS

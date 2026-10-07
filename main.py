@@ -89,7 +89,8 @@ class Window(Adw.ApplicationWindow):
         self.baseline_banner = Adw.Banner(
             title="Could not read the saved original state",
             button_label="Forget")
-        self.baseline_banner.connect("button-clicked", self.on_forget_clicked)
+        self.baseline_banner.connect("button-clicked",
+                                     lambda *a: self.confirm_forget())
         overlay = Gtk.Overlay()
         overlay.set_child(self.page_stack)
         overlay.add_overlay(self.baseline_banner)
@@ -458,7 +459,11 @@ class Window(Adw.ApplicationWindow):
                         "Could not save the original state: %s" % e
                 else:
                     self.baselines.update(new)
+        self.baseline_problem = baseline_problem
         if baseline_problem is not None:
+            self.baseline_banner.set_button_label(
+                "Forget" if baseline.forget_would_help(baseline_problem)
+                else "")
             self.baseline_banner.set_revealed(True)
         else:
             self.baseline_banner.set_revealed(False)

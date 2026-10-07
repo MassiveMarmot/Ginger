@@ -125,3 +125,12 @@ def forget(path=None):
     except FileNotFoundError:
         return False
     return True
+
+
+SAVE_PROBLEM_PREFIX = "Could not save the original state"
+
+
+def forget_would_help(problem):
+    """Forgetting helps only when the file itself is the problem,
+    not when writing it failed."""
+    return not str(problem).startswith(SAVE_PROBLEM_PREFIX)
