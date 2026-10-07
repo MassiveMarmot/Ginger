@@ -475,8 +475,9 @@ class UISmokeTests(unittest.TestCase):
         import baseline
         loaded = baseline.load(path)
         self.assertIn("firefox", loaded)
-        self.assertEqual(sorted(loaded["firefox"]["connected"]),
-                         ["camera", "network", "removable-media"])
+        self.assertEqual(
+            sorted(c["plug"] for c in loaded["firefox"]["connected"]),
+            ["camera", "network", "removable-media"])
 
     def test_baseline_not_overwritten_across_loads(self):
         self.server.snaps = [dict(SNAP_APP)]
@@ -492,16 +493,64 @@ class UISmokeTests(unittest.TestCase):
         with open(path) as f:
             self.assertEqual(f.read(), first)
 
-    def test_corrupt_baseline_shows_status_page(self):
+    def test_corrupt_baseline_shows_banner_not_blocked(self):
         self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
         os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
         with open(os.path.join(os.environ["GINGER_DATA_DIR"],
                                "baseline.json"), "w") as f:
             f.write("not-json{")
         win = self.make_window()
-        self.assertEqual(win.page_stack.get_visible_child_name(), "error")
-        self.assertIn("original state",
-                      win.error_page.get_title())
+        self.assertTrue(win.baseline_banner.get_revealed())
+        self.assertEqual(win.page_stack.get_visible_child_name(), "snaps")
+        self.assertEqual(len(self.row_texts(win)), 1)
+        path = os.path.join(os.environ["GINGER_DATA_DIR"],
+                            "baseline.json")
+        self.assertEqual(open(path).read(), "not-json{")
+
+    def test_baseline_save_failure_shows_banner(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        data_dir = os.environ["GINGER_DATA_DIR"]
+        os.mkdir(data_dir)
+        os.chmod(data_dir, 0o500)
+        try:
+            win = self.make_window()
+            self.assertTrue(win.baseline_banner.get_revealed())
+            self.assertEqual(win.page_stack.get_visible_child_name(),
+                             "snaps")
+            self.assertEqual(len(self.row_texts(win)), 1)
+        finally:
+            os.chmod(data_dir, 0o700)
+
+    def test_forget_menu_item_clears_banner(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
+        with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                               "baseline.json"), "w") as f:
+            f.write("not-json{")
+        win = self.make_window()
+        self.assertTrue(win.baseline_banner.get_revealed())
+        win.activate_action("win.forget-baseline", None)
+        ctx = GLib.MainContext.default()
+        for _ in range(10):
+            ctx.iteration(False)
+        alert = [d for w in Gtk.Window.list_toplevels()
+                 for d in self.walk(w)
+                 if isinstance(d, Adw.AlertDialog)]
+        self.assertTrue(alert)
+        alert[0].emit("response", "forget")
+        self.run_until(lambda: not win.baseline_banner.get_revealed())
+        self.assertFalse(os.path.exists(os.path.join(
+            os.environ["GINGER_DATA_DIR"], "baseline.json")))
+        self.assertEqual(len(self.row_texts(win)), 1)
+
+    def test_banner_hidden_when_baseline_ok(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        win = self.make_window()
+        self.assertFalse(win.baseline_banner.get_revealed())
 
 
 class PackagingTests(unittest.TestCase):

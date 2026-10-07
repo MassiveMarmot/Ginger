@@ -99,11 +99,12 @@ def derive_plugs(connections, snap, show_all=False):
 
 
 def counts(connections, snap):
-    """(connected, available) across all plugs, hidden ones included."""
+    """(connected, available) across all plugs, hidden ones included.
+    Available means offered: exactly one compatible slot."""
     connected = available = 0
     for plug in derive_plugs(connections, snap, show_all=True):
         if plug["connected"]:
             connected += 1
-        elif plug["n_slots"]:
+        elif plug["slot"] is not None:
             available += 1
     return connected, available

@@ -40,7 +40,6 @@ class BaselineTests(unittest.TestCase):
         baseline.save_snaps(first)
         with open(self.path()) as f:
             saved1 = f.read()
-        # user disconnects camera outside Ginger; relaunch
         connections2 = {"established": []}
         self.assertEqual(
             baseline.capture_new(baseline.load(), {"firefox": connections2}),
@@ -72,6 +71,17 @@ class BaselineTests(unittest.TestCase):
         baseline.save_snaps({"firefox": entry})
         self.assertEqual(baseline.load()["firefox"], entry)
 
+    def test_entry_shape(self):
+        entry = baseline.entry_for(
+            {"established": [
+                established("camera", slot_snap="core24", slot="cam"),
+                established("network")]},
+            "firefox")
+        self.assertEqual(entry, {"connected": [
+            {"plug": "camera", "slot_snap": "core24", "slot": "cam"},
+            {"plug": "network", "slot_snap": "snapd", "slot": "network"},
+        ]})
+
     def test_corrupt_file_raises(self):
         with open(self.path(), "w") as f:
             f.write("not json{")
@@ -83,20 +93,27 @@ class BaselineTests(unittest.TestCase):
         with self.assertRaises(baseline.BaselineError):
             baseline.load()
 
-    def test_tampered_snaps_raises(self):
-        self.write_raw({"version": 1, "snaps": "evil"})
+    def test_version_1_raises(self):
+        self.write_raw({"version": 1, "snaps": {
+            "firefox": {"connected": ["camera"],
+                        "plugs": [], "slots": []}}})
         with self.assertRaises(baseline.BaselineError):
             baseline.load()
 
-    def test_tampered_entries_skipped(self):
+    def test_invalid_snap_entry_raises(self):
         good = baseline.entry_for(
             {"established": [established("camera")]}, "firefox")
-        self.write_raw({"version": 1, "snaps": {
-            "firefox": good,
-            "bad": "not-a-dict",
-            "bad2": {"connected": "no-list"}}})
-        loaded = baseline.load()
-        self.assertEqual(loaded, {"firefox": good})
+        for bad in ("a string", {}, {"connected": "no"},
+                    {"connected": ["bare-plug"]},
+                    {"connected": [{"plug": "x"}]},
+                    {"connected": [{"plug": "x", "slot_snap": "s",
+                                   "slot": "y", "extra": 1}]},
+                    {"connected": [{"plug": "x", "slot_snap": "s",
+                                   "slot": None}]}):
+            self.write_raw({"version": baseline.BASELINE_VERSION,
+                            "snaps": {"firefox": good, "bad": bad}})
+            with self.assertRaises(baseline.BaselineError):
+                baseline.load()
 
     def test_missing_file_is_empty(self):
         self.assertEqual(baseline.load(), {})
@@ -107,8 +124,8 @@ class BaselineTests(unittest.TestCase):
              "undesired": [established("removable-media",
                                        interface="removable-media")]},
             "firefox")
-        self.assertEqual(entry["connected"], ["camera"])
-        self.assertNotIn("removable-media", entry["connected"])
+        self.assertEqual([c["plug"] for c in entry["connected"]],
+                         ["camera"])
 
     def test_forget_deletes_file(self):
         baseline.save_snaps({"firefox": baseline.entry_for(
@@ -123,6 +140,16 @@ class BaselineTests(unittest.TestCase):
             "<b>evil</b>&amp;")
         baseline.save_snaps({"<b>evil</b>&amp;": entry})
         self.assertEqual(baseline.load()["<b>evil</b>&amp;"], entry)
+
+    def test_save_failure_raises_oserror(self):
+        os.environ["GINGER_DATA_DIR"] = os.path.join(
+            self.tmpdir.name, "not-writable", "deeper")
+        os.chmod(self.tmpdir.name, 0o500)
+        try:
+            with self.assertRaises(OSError):
+                baseline.save_snaps({"firefox": {"connected": []}})
+        finally:
+            os.chmod(self.tmpdir.name, 0o700)
 
 
 if __name__ == "__main__":

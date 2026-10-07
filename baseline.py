@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 
-BASELINE_VERSION = 1
+BASELINE_VERSION = 2
 BASELINE_FILENAME = "baseline.json"
 
 
@@ -34,6 +34,21 @@ def baseline_path():
     return _baseline_path()
 
 
+def _valid_entry(entry):
+    if not isinstance(entry, dict) or set(entry) != {"connected"}:
+        return False
+    connected = entry.get("connected")
+    if not isinstance(connected, list):
+        return False
+    for c in connected:
+        if not isinstance(c, dict) or set(c) != {"plug", "slot_snap",
+                                                 "slot"} \
+                or not all(isinstance(c[k], str) for k in
+                           ("plug", "slot_snap", "slot")):
+            return False
+    return True
+
+
 def load(path=None):
     path = path or _baseline_path()
     try:
@@ -49,18 +64,10 @@ def load(path=None):
         raise BaselineError("unsupported baseline file")
     snaps = {}
     for name, entry in data["snaps"].items():
-        if isinstance(name, str) and _valid_entry(entry):
-            snaps[name] = entry
+        if not isinstance(name, str) or not _valid_entry(entry):
+            raise BaselineError("invalid data in the baseline file")
+        snaps[name] = entry
     return snaps
-
-
-def _valid_entry(entry):
-    if not isinstance(entry, dict):
-        return False
-    for key in ("connected", "plugs", "slots"):
-        if not isinstance(entry.get(key), list):
-            return False
-    return True
 
 
 def save_snaps(snaps):
@@ -85,26 +92,21 @@ def save_snaps(snaps):
 
 
 def entry_for(connections, snap):
-    """Baseline entry: connected state only, derived from established."""
-    established = []
-    plugs = []
-    slots = []
+    """Baseline entry: connected plugs with their slots, from established."""
+    connected = []
     for c in connections.get("established") or []:
         if not isinstance(c, dict) or not isinstance(c.get("plug"), dict):
             continue
         if c["plug"].get("snap") != snap:
             continue
-        plug = str(c["plug"].get("plug") or "?")
         slot = c.get("slot") if isinstance(c.get("slot"), dict) else {}
-        established.append(plug)
-        plugs.append({"plug": plug,
-                      "snap": snap,
-                      "interface": str(c.get("interface") or "")})
-        slots.append({"snap": str(slot.get("snap") or "?"),
-                      "slot": str(slot.get("slot") or "?"),
-                      "interface": str(c.get("interface") or "")})
-    return {"connected": sorted(established),
-            "plugs": plugs, "slots": slots}
+        connected.append({
+            "plug": str(c["plug"].get("plug") or "?"),
+            "slot_snap": str(slot.get("snap") or "?"),
+            "slot": str(slot.get("slot") or "?"),
+        })
+    connected.sort(key=lambda c: c["plug"])
+    return {"connected": connected}
 
 
 def capture_new(existing, connections_by_snap):
