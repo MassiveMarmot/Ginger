@@ -67,6 +67,7 @@ def main():
         show("kind", e.kind)
         show("message", e.message)
         return 1
+    show("raw response", client.last_response)
     show("change id", result.get("change"))
     change_id = result.get("change")
     if change_id:

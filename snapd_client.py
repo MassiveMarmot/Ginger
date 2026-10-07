@@ -41,6 +41,7 @@ class Client:
     def __init__(self, socket_path=None):
         self.socket_path = socket_path or os.environ.get("SNAPD_SOCKET",
                                                          DEFAULT_SOCKET)
+        self.last_response = None
 
     def _request(self, method, path, body=None, allow_interaction=False):
         data = json.dumps(body).encode() if body is not None else None
@@ -70,6 +71,7 @@ class Client:
                 result = {}
             raise SnapdError(result.get("message", "snapd error"),
                              kind=result.get("kind"), status_code=resp.status)
+        self.last_response = payload
         return payload.get("result")
 
     def list_snaps(self):
@@ -91,6 +93,8 @@ class Client:
                 "slots": [{"snap": slot_snap, "slot": slot}]}
         result = self._request("POST", "/v2/interfaces", body,
                                allow_interaction=True)
+        if not isinstance(result, dict):
+            result = self.last_response
         if not isinstance(result, dict):
             raise SnapdError("unexpected change response")
         return result
