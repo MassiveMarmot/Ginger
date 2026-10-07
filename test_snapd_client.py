@@ -4,13 +4,16 @@ import os
 import socket
 import tempfile
 import threading
+import time
 import unittest
 import urllib.parse
 
-from snapd_client import Client, SnapdError
+from snapd_client import Client, SnapdError, MUTATION_TIMEOUT
 
 
 class MockSnapd:
+    DELAY = 1.0
+
     def __init__(self, socket_path):
         self.socket_path = socket_path
         self.snaps = []
@@ -22,6 +25,7 @@ class MockSnapd:
         self.interface_responses = []  # (status, body) for POST /v2/interfaces
         self.change_script = {}  # change id -> [result dicts], consumed per poll
         self.next_change_id = 1
+        self.delay = 0  # seconds to sleep before answering POST /v2/interfaces
         self.running = True
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(socket_path)
@@ -68,6 +72,8 @@ class MockSnapd:
                 self._handle(conn, method, path, body, headers)
 
     def _handle(self, conn, method, path, body, headers):
+        if self.delay and method == "POST" and path == "/v2/interfaces":
+            time.sleep(self.delay)
         if self.responses:
             status, payload = self.responses.pop(0)
         elif method == "GET" and path.startswith("/v2/connections"):
@@ -287,6 +293,30 @@ class MutationTests(unittest.TestCase):
                                          "snapd", "camera")
         self.assertEqual(ctx.exception.status_code, 500)
         self.assertEqual(ctx.exception.message, "snapd exploded")
+
+    def test_change_interface_rejects_unknown_action(self):
+        with self.assertRaises(SnapdError) as ctx:
+            self.client.change_interface("install", "firefox", "camera",
+                                         "snapd", "camera")
+        self.assertEqual(self.server.posts, [])
+
+    def test_change_interface_waits_for_slow_polkit(self):
+        self.server.delay = MockSnapd.DELAY
+        start = time.monotonic()
+        change_id = self.client.change_interface(
+            "connect", "firefox", "camera", "snapd", "camera",
+            timeout=MockSnapd.DELAY + 10)
+        elapsed = time.monotonic() - start
+        self.assertEqual(change_id, "1")
+        self.assertGreaterEqual(elapsed, MockSnapd.DELAY)
+
+    def test_change_interface_times_out_with_request_timeout(self):
+        self.server.delay = 5
+        with self.assertRaises(SnapdError) as ctx:
+            self.client.change_interface("connect", "firefox", "camera",
+                                         "snapd", "camera", timeout=1)
+        self.assertEqual(ctx.exception.kind, "request-timeout")
+        self.server.delay = 0
 
 
 class ChangeTests(unittest.TestCase):

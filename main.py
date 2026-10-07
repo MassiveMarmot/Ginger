@@ -8,6 +8,8 @@ gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
+import baseline
+import interfaces
 from snapd_client import Client, SnapdError
 
 APP_ID = "io.github.massivemarmot.Ginger"
@@ -38,6 +40,10 @@ class Window(Adw.ApplicationWindow):
         self.selected_snap = None
         self.query = ""
         self.show_libraries = False
+        self.show_all_interfaces = False
+        self.connections = {}
+        self.connections_by_snap = {}
+        self.baselines = {}
 
         self.sidebar_rows = Gtk.ListBox(css_classes=["navigation-sidebar"])
         self.sidebar_rows.connect("row-activated", self.on_page_selected)
@@ -61,6 +67,10 @@ class Window(Adw.ApplicationWindow):
         about = Gio.SimpleAction.new("about", None)
         about.connect("activate", lambda *a: self.show_about())
         self.add_action(about)
+        forget = Gio.SimpleAction.new("forget-baseline", None)
+        forget.connect("activate", lambda *a: self.confirm_forget())
+        self.add_action(forget)
+        menu.append("Forget saved original state…", "win.forget-baseline")
         sidebar_header.pack_end(Gtk.MenuButton(
             icon_name="open-menu-symbolic", menu_model=menu,
             tooltip_text="Main Menu"))
@@ -76,11 +86,19 @@ class Window(Adw.ApplicationWindow):
         self.page_stack.add_named(self.snaps_page, "snaps")
         self.page_stack.add_named(self.error_wrapper, "error")
 
+        self.baseline_banner = Adw.Banner(
+            title="Could not read the saved original state",
+            button_label="Forget")
+        self.baseline_banner.connect("button-clicked", self.on_forget_clicked)
+        overlay = Gtk.Overlay()
+        overlay.set_child(self.page_stack)
+        overlay.add_overlay(self.baseline_banner)
+
         self.build_sidebar()
         self.sidebar_rows.select_row(self.sidebar_rows.get_row_at_index(0))
 
         self.main_split.set_sidebar(sidebar)
-        self.main_split.set_content(self.page_stack)
+        self.main_split.set_content(overlay)
         self.set_content(self.main_split)
 
         self.setup_breakpoints()
@@ -218,9 +236,17 @@ class Window(Adw.ApplicationWindow):
                                 use_markup=False)
         lib_row.add_suffix(lib_check)
         lib_row.set_activatable_widget(lib_check)
+        all_check = Gtk.CheckButton(css_classes=["selection-mode"])
+        all_check.connect("toggled", self.on_all_check_toggled)
+        all_row = Adw.ActionRow(title="Show all interfaces",
+                                use_markup=False)
+        all_row.add_suffix(all_check)
+        all_row.set_activatable_widget(all_check)
         group = Adw.PreferencesGroup()
         group.add(lib_row)
+        group.add(all_row)
         self.lib_check = lib_check
+        self.all_check = all_check
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
         view.add_top_bar(header)
@@ -232,6 +258,10 @@ class Window(Adw.ApplicationWindow):
     def on_lib_check_toggled(self, check):
         self.show_libraries = check.get_active()
         self.refresh_list()
+
+    def on_all_check_toggled(self, check):
+        self.show_all_interfaces = check.get_active()
+        self.update_detail()
 
     def on_filter_toggled(self, button):
         active = button.get_active()
@@ -260,7 +290,12 @@ class Window(Adw.ApplicationWindow):
         self.highlight_selected_row()
 
     def snap_row(self, name):
-        row = Adw.ActionRow(title=name, use_markup=False)
+        connections = self.connections_by_snap.get(name)
+        subtitle = ""
+        if connections is not None:
+            connected, available = interfaces.counts(connections, name)
+            subtitle = "%d connected, %d available" % (connected, available)
+        row = Adw.ActionRow(title=name, subtitle=subtitle, use_markup=False)
         row.set_activatable(True)
         row.snap_name = name
         row.add_prefix(Gtk.Image(icon_name="application-x-executable-symbolic"))
@@ -323,7 +358,63 @@ class Window(Adw.ApplicationWindow):
                 subtitle=str(snap.get("version")))
             card.add(version_row)
         box.append(card)
+        connections = self.connections_by_snap.get(name)
+        if connections is not None:
+            box.append(self.permissions_group(name, connections))
         self.detail_bin.set_child(box)
+
+    def confirm_forget(self):
+        alert = Adw.AlertDialog(
+            heading="Forget saved original state?",
+            body="Deletes the saved original connections of every snap. "
+                 "A new original state is taken at the next launch.")
+        alert.add_response("cancel", "Cancel")
+        alert.add_response("forget", "Forget")
+        alert.set_response_appearance(
+            "forget", Adw.ResponseAppearance.DESTRUCTIVE)
+        alert.choose(self, None, self.on_forget_confirmed, None)
+
+    def on_forget_confirmed(self, source, result, _):
+        if source.choose_finish(result) != "forget":
+            return
+        self.on_forget_clicked()
+
+    def on_forget_clicked(self, *args):
+        baseline.forget()
+        self.load()
+
+    def permissions_group(self, name, connections):
+        group = Adw.PreferencesGroup(
+            title=GLib.markup_escape_text("Permissions"))
+        plugs = interfaces.derive_plugs(connections, name,
+                                         show_all=self.show_all_interfaces)
+        if not plugs:
+            group.add(Adw.ActionRow(title="No interfaces", use_markup=False))
+            return group
+        for plug in plugs:
+            row = Adw.SwitchRow(title=plug["name"],
+                                subtitle=plug["interface"] + " \u00b7 "
+                                + plug["state"],
+                                use_markup=False)
+            row.set_active(plug["connected"])
+            if plug["connected"]:
+                if plug["conn_slot"] is not None:
+                    row.plug_slot = plug["conn_slot"]
+            elif plug["n_slots"] == 0:
+                row.set_subtitle(plug["interface"] + " \u00b7 No slot available")
+            elif plug["n_slots"] > 1:
+                row.set_subtitle(plug["interface"]
+                                + " \u00b7 Several slots available")
+            elif plug["slot"] is not None:
+                row.plug_slot = plug["slot"]
+            if plug["tier"] == 3 and not plug["connected"]:
+                row.set_subtitle(plug["interface"]
+                                + " \u00b7 " + plug["state"]
+                                + " \u00b7 " + "Connect not offered")
+            row.plug_info = plug
+            row.set_sensitive(False)
+            group.add(row)
+        return group
 
     def copy_text(self, button, text):
         self.get_clipboard().set_text(text)
@@ -337,6 +428,7 @@ class Window(Adw.ApplicationWindow):
     def load(self):
         try:
             snaps = self.client.list_snaps()
+            self.connections = self.client.list_connections()
         except SnapdError as e:
             if e.kind == "connection-failed":
                 self.show_error("Could not reach snapd", e.message,
@@ -345,7 +437,31 @@ class Window(Adw.ApplicationWindow):
                 self.show_error("snapd returned an error", e.message,
                                 "dialog-warning-symbolic")
             return
+        self.baselines = {}
+        baseline_problem = None
+        try:
+            self.baselines = baseline.load()
+        except baseline.BaselineError as e:
+            baseline_problem = str(e)
         self.snaps = [s for s in snaps if isinstance(s, dict)]
+        self.connections_by_snap = {}
+        for name in self.snap_names():
+            self.connections_by_snap[name] = self.connections
+        if baseline_problem is None:
+            new = baseline.capture_new(self.baselines,
+                                       self.connections_by_snap)
+            if new:
+                try:
+                    baseline.save_snaps({**self.baselines, **new})
+                except OSError as e:
+                    baseline_problem = \
+                        "Could not save the original state: %s" % e
+                else:
+                    self.baselines.update(new)
+        if baseline_problem is not None:
+            self.baseline_banner.set_revealed(True)
+        else:
+            self.baseline_banner.set_revealed(False)
         if self.selected_snap not in self.snap_names():
             self.selected_snap = None
         if self.search_entry.get_text() != self.query:

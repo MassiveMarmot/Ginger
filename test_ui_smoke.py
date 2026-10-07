@@ -17,6 +17,51 @@ SNAP_APP = {"name": "firefox", "type": "app", "version": "1.0",
             "summary": "Browse the web", "apps": [{"name": "firefox"}]}
 SNAP_BASE = {"name": "core24", "type": "base", "version": "2"}
 
+CONNECTIONS = {
+    "established": [
+        {"slot": {"snap": "snapd", "slot": "camera"},
+         "plug": {"snap": "firefox", "plug": "camera"},
+         "interface": "camera", "manual": True},
+        {"slot": {"snap": "snapd", "slot": "network"},
+         "plug": {"snap": "firefox", "plug": "network"},
+         "interface": "network"},
+        {"slot": {"snap": "snapd", "slot": "removable-media"},
+         "plug": {"snap": "firefox", "plug": "removable-media"},
+         "interface": "removable-media", "manual": True},
+    ],
+    "undesired": [
+        {"slot": {"snap": "snapd", "slot": "audio-record"},
+         "plug": {"snap": "firefox", "plug": "audio-record"},
+         "interface": "audio-record", "manual": True},
+    ],
+    "plugs": [
+        {"snap": "firefox", "plug": "camera", "interface": "camera",
+         "apps": [], "connections": [{"snap": "snapd", "slot": "camera"}]},
+        {"snap": "firefox", "plug": "network", "interface": "network",
+         "apps": [], "connections": []},
+        {"snap": "firefox", "plug": "removable-media",
+         "interface": "removable-media", "apps": [], "connections": []},
+        {"snap": "firefox", "plug": "audio-record",
+         "interface": "audio-record", "apps": [], "connections": []},
+        {"snap": "firefox", "plug": "docker-support",
+         "interface": "docker-support", "apps": [], "connections": []},
+        {"snap": "firefox", "plug": "orphan", "interface": "orphan-if",
+         "apps": [], "connections": []},
+        {"snap": "firefox", "plug": "gtk-3-themes", "interface": "content",
+         "apps": [], "connections": []},
+    ],
+    "slots": [
+        {"snap": "snapd", "slot": "camera", "interface": "camera",
+         "connections": []},
+        {"snap": "snapd", "slot": "network", "interface": "network",
+         "connections": []},
+        {"snap": "snapd", "slot": "removable-media",
+         "interface": "removable-media", "connections": []},
+        {"snap": "snapd", "slot": "audio-record",
+         "interface": "audio-record", "connections": []},
+    ],
+}
+
 
 class UISmokeTests(unittest.TestCase):
     @classmethod
@@ -45,8 +90,21 @@ class UISmokeTests(unittest.TestCase):
         self.server.snaps = []
         self.server.posts = []
         self.server.responses = []
+        self.server.default_connections = {
+            "established": [], "undesired": [], "plugs": [], "slots": []}
+        self.prev_data_dir = os.environ.get("GINGER_DATA_DIR")
+        self.tmpdir_i = tempfile.TemporaryDirectory()
+        os.environ["GINGER_DATA_DIR"] = self.tmpdir_i.name
         self.win = self.main.Window(self.app)
         self.win.present()
+
+    def tearDown(self):
+        self.win.destroy()
+        self.tmpdir_i.cleanup()
+        if self.prev_data_dir is None:
+            del os.environ["GINGER_DATA_DIR"]
+        else:
+            os.environ["GINGER_DATA_DIR"] = self.prev_data_dir
 
     def tearDown(self):
         self.win.destroy()
@@ -306,6 +364,195 @@ class UISmokeTests(unittest.TestCase):
     def test_window_title(self):
         win = self.make_window()
         self.assertEqual(win.get_title(), "Ginger")
+
+    def permission_rows(self, win):
+        return [r for r in self.walk(win.detail_bin.get_child())
+                if isinstance(r, Adw.SwitchRow)]
+
+    def row_by_title(self, win, title):
+        for row in self.permission_rows(win):
+            if row.get_title() == title:
+                return row
+        return None
+
+    def test_snap_counts_in_list(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        win = self.make_window()
+        row = win.snaps_list.get_row_at_index(0)
+        texts = [l.get_text() for l in self.find_labels(row, [])]
+        self.assertTrue(any("3 connected" in t for t in texts), texts)
+        self.assertTrue(any("1 available" in t for t in texts), texts)
+
+    def test_permissions_group_states(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
+        camera = self.row_by_title(win, "camera")
+        self.assertIsNotNone(camera)
+        self.assertTrue(camera.get_active())
+        self.assertIn("Manually connected", camera.get_subtitle())
+        network = self.row_by_title(win, "network")
+        self.assertTrue(network.get_active())
+        self.assertIn("Connected", network.get_subtitle())
+        self.assertNotIn("Manually", network.get_subtitle())
+        audio = self.row_by_title(win, "audio-record")
+        self.assertFalse(audio.get_active())
+        self.assertIn("Manually disconnected", audio.get_subtitle())
+
+    def test_no_slot_available(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
+        orphan = self.row_by_title(win, "orphan")
+        self.assertIsNotNone(orphan)
+        self.assertIn("No slot available", orphan.get_subtitle())
+        self.assertFalse(orphan.get_sensitive())
+
+    def test_switches_insensitive_in_milestone_3(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
+        for row in self.permission_rows(win):
+            self.assertFalse(row.get_sensitive())
+
+    def test_content_plug_hidden_by_default(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
+        self.assertIsNone(self.row_by_title(win, "gtk-3-themes"))
+        win.all_check.set_active(True)
+        self.assertIsNotNone(self.row_by_title(win, "gtk-3-themes"))
+
+    def test_tier_sort_order(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
+        titles = [r.get_title() for r in self.permission_rows(win)]
+        self.assertEqual(titles, ["audio-record", "camera", "network",
+                                 "orphan", "removable-media",
+                                 "docker-support"])
+
+    def test_tier_3_connect_not_offered(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
+        docker = self.row_by_title(win, "docker-support")
+        self.assertIn("Connect not offered", docker.get_subtitle())
+
+    def test_markup_in_plug_name_not_parsed(self):
+        snap = dict(SNAP_APP, name="<b>evil</b>&amp;")
+        conns = dict(CONNECTIONS)
+        conns["plugs"] = [dict(p) for p in CONNECTIONS["plugs"]]
+        conns["plugs"][0] = {"snap": "<b>evil</b>&amp;", "plug": "camera",
+                             "interface": "camera", "apps": [],
+                             "connections": []}
+        conns["established"] = [
+            {"slot": {"snap": "snapd", "slot": "camera"},
+             "plug": {"snap": "<b>evil</b>&amp;", "plug": "camera"},
+             "interface": "camera", "manual": True}]
+        self.server.snaps = [snap]
+        self.server.default_connections = conns
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
+        texts = [l.get_text() for l in
+                 self.find_labels(win.detail_bin.get_child(), [])]
+        self.assertIn("<b>evil</b>&amp;", texts)
+
+    def test_baseline_written_at_launch(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        self.make_window()
+        path = os.path.join(os.environ["GINGER_DATA_DIR"],
+                            "baseline.json")
+        self.assertTrue(os.path.exists(path))
+        import baseline
+        loaded = baseline.load(path)
+        self.assertIn("firefox", loaded)
+        self.assertEqual(
+            sorted(c["plug"] for c in loaded["firefox"]["connected"]),
+            ["camera", "network", "removable-media"])
+
+    def test_baseline_not_overwritten_across_loads(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        self.make_window()
+        path = os.path.join(os.environ["GINGER_DATA_DIR"],
+                            "baseline.json")
+        with open(path) as f:
+            first = f.read()
+        self.server.default_connections = {
+            "established": [], "undesired": [], "plugs": [], "slots": []}
+        self.win.load()
+        with open(path) as f:
+            self.assertEqual(f.read(), first)
+
+    def test_corrupt_baseline_shows_banner_not_blocked(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
+        with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                               "baseline.json"), "w") as f:
+            f.write("not-json{")
+        win = self.make_window()
+        self.assertTrue(win.baseline_banner.get_revealed())
+        self.assertEqual(win.page_stack.get_visible_child_name(), "snaps")
+        self.assertEqual(len(self.row_texts(win)), 1)
+        path = os.path.join(os.environ["GINGER_DATA_DIR"],
+                            "baseline.json")
+        self.assertEqual(open(path).read(), "not-json{")
+
+    def test_baseline_save_failure_shows_banner(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        data_dir = os.environ["GINGER_DATA_DIR"]
+        os.chmod(data_dir, 0o500)
+        try:
+            win = self.make_window()
+            self.assertTrue(win.baseline_banner.get_revealed())
+            self.assertEqual(win.page_stack.get_visible_child_name(),
+                             "snaps")
+            self.assertEqual(len(self.row_texts(win)), 1)
+        finally:
+            os.chmod(data_dir, 0o700)
+
+    def test_forget_menu_item_clears_banner(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
+        with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                               "baseline.json"), "w") as f:
+            f.write("not-json{")
+        win = self.make_window()
+        self.assertTrue(win.baseline_banner.get_revealed())
+        win.activate_action("win.forget-baseline", None)
+        ctx = GLib.MainContext.default()
+        for _ in range(10):
+            ctx.iteration(False)
+        alert = [d for w in Gtk.Window.list_toplevels()
+                 for d in self.walk(w)
+                 if isinstance(d, Adw.AlertDialog)]
+        self.assertTrue(alert)
+        alert[0].emit("response", "forget")
+        self.run_until(lambda: not win.baseline_banner.get_revealed())
+        import baseline
+        path = os.path.join(os.environ["GINGER_DATA_DIR"], "baseline.json")
+        self.assertEqual(
+            [c["plug"] for c in baseline.load(path)["firefox"]["connected"]],
+            ["camera", "network", "removable-media"])
+        self.assertEqual(len(self.row_texts(win)), 1)
+
+    def test_banner_hidden_when_baseline_ok(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        win = self.make_window()
+        self.assertFalse(win.baseline_banner.get_revealed())
 
 
 class PackagingTests(unittest.TestCase):
