@@ -580,27 +580,29 @@ class UISmokeTests(unittest.TestCase):
         win = self.load_win()
         self.assert_switches_live(win, True)
 
-    def test_switches_dead_without_baseline(self):
-        import baseline as baseline_mod
-        self.prev_dir = os.environ.get("GINGER_DATA_DIR")
-        fresh = tempfile.TemporaryDirectory()
-        os.environ["GINGER_DATA_DIR"] = fresh.name
+    def test_switches_dead_when_baseline_problem(self):
+        # A corrupt baseline keeps the gate closed: no change may be sent
+        # while the saved original state is unreadable.
+        os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
+        with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                               "baseline.json"), "w") as f:
+            f.write("not-json{")
+        win = self.load_win()
+        self.assertTrue(win.baseline_banner.get_revealed())
+        self.assert_switches_live(win, False)
+
+    @unittest.skipIf(os.geteuid() == 0, "chmod is ineffective as root")
+    def test_switches_dead_when_baseline_save_fails(self):
+        # New snaps get a baseline at launch; if it cannot be saved,
+        # the snap has no baseline and the gate stays closed.
+        data_dir = os.environ["GINGER_DATA_DIR"]
+        os.chmod(data_dir, 0o500)
         try:
-            baseline_path = os.path.join(fresh.name, "baseline.json")
-            conns = {"established": [], "undesired": [], "plugs": [],
-                     "slots": []}
-            baseline_mod.save_snaps({"firefox": baseline_mod.entry_for(
-                conns, "firefox")})
-            with open(baseline_path) as f:
-                content = f.read()
-            content = content.replace('"firefox"', '"other"')
-            with open(baseline_path, "w") as f:
-                f.write(content)
             win = self.load_win()
+            self.assertTrue(win.baseline_banner.get_revealed())
             self.assert_switches_live(win, False)
         finally:
-            fresh.cleanup()
-            os.environ["GINGER_DATA_DIR"] = self.prev_dir
+            os.chmod(data_dir, 0o700)
 
     def confirm_alert(self, heading_part, response):
         ctx = GLib.MainContext.default()
