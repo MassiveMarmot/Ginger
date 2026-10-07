@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_snapd_client import MockSnapd  # noqa: E402
 
 import snapd_client  # noqa: E402
+import changes  # noqa: E402
 
 from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
@@ -554,6 +555,208 @@ class UISmokeTests(unittest.TestCase):
         self.server.default_connections = CONNECTIONS
         win = self.make_window()
         self.assertFalse(win.baseline_banner.get_revealed())
+
+    def switch_rows(self, win):
+        return [r for r in self.walk(win.detail_bin.get_child())
+                if isinstance(r, Adw.SwitchRow)]
+
+    def switch_row(self, win, plug):
+        for r in self.switch_rows(win):
+            if r.plug_name == plug:
+                return r
+        return None
+
+    def load_win(self, snaps=None, connections=None):
+        self.server.snaps = snaps or [dict(SNAP_APP)]
+        if connections is not None:
+            self.server.default_connections = connections
+        else:
+            self.server.default_connections = CONNECTIONS
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
+        return win
+
+    def assert_switches_live(self, win, expected_sensitive):
+        for row in self.switch_rows(win):
+            if row.plug_info["tier"] == 3 and not row.plug_info["connected"]:
+                continue
+            if row.plug_slot is None:
+                continue
+            self.assertEqual(row.get_sensitive(), expected_sensitive)
+
+    def test_switches_live_when_baseline_exists(self):
+        win = self.load_win()
+        self.assert_switches_live(win, True)
+
+    def test_switches_dead_without_baseline(self):
+        import baseline as baseline_mod
+        self.prev_dir = os.environ.get("GINGER_DATA_DIR")
+        fresh = tempfile.TemporaryDirectory()
+        os.environ["GINGER_DATA_DIR"] = fresh.name
+        try:
+            baseline_path = os.path.join(fresh.name, "baseline.json")
+            conns = {"established": [], "undesired": [], "plugs": [],
+                     "slots": []}
+            baseline_mod.save_snaps({"firefox": baseline_mod.entry_for(
+                conns, "firefox")})
+            with open(baseline_path) as f:
+                content = f.read()
+            content = content.replace('"firefox"', '"other"')
+            with open(baseline_path, "w") as f:
+                f.write(content)
+            win = self.load_win()
+            self.assert_switches_live(win, False)
+        finally:
+            fresh.cleanup()
+            os.environ["GINGER_DATA_DIR"] = self.prev_dir
+
+    def test_header_sent_and_202_to_done(self):
+        win = self.load_win()
+        row = self.switch_row(win, "camera")
+        self.assertTrue(row.get_active())
+        row.emit("notify::active", None)
+        self.run_until(lambda: self.server.posts)
+        path, body, allowed = self.server.posts[0]
+        self.assertEqual(path, "/v2/interfaces")
+        self.assertTrue(allowed)
+        self.assertEqual(body, {
+            "action": "disconnect",
+            "plugs": [{"snap": "firefox", "plug": "camera"}],
+            "slots": [{"snap": "snapd", "slot": "camera"}]})
+        self.run_until(lambda: win.busy is False)
+
+    def test_change_error_shows_plain_text_and_reverts(self):
+        win = self.load_win()
+        row = self.switch_row(win, "camera")
+        self.server.change_script["1"] = [
+            {"status": "Error", "ready": True, "err": "<b>nope</b>&amp;",
+             "summary": "failed"}]
+        row.emit("notify::active", None)
+        self.run_until(lambda: win.busy is False)
+        error = [d for w in Gtk.Window.list_toplevels()
+                 for d in self.walk(w) if isinstance(d, Adw.AlertDialog)
+                 and d.get_heading() == "snapd returned an error"]
+        self.assertTrue(error)
+        self.assertEqual(error[0].get_body(), "<b>nope</b>&amp;")
+        row = self.switch_row(win, "camera")
+        self.assertTrue(row.get_active())
+
+    def test_auth_cancelled_silent_revert(self):
+        win = self.load_win()
+        row = self.switch_row(win, "camera")
+        self.server.interface_responses.append((403, {
+            "type": "error", "status-code": 403,
+            "result": {"message": "cancelled",
+                       "kind": "auth-cancelled"}}))
+        row.emit("notify::active", None)
+        self.run_until(lambda: win.busy is False)
+        self.run_until(lambda: self.switch_row(win, "camera") is not None)
+        row = self.switch_row(win, "camera")
+        self.assertTrue(row.get_active())
+
+    def test_tier1_connect_no_confirmation(self):
+        conns = dict(CONNECTIONS)
+        conns["established"] = [e for e in CONNECTIONS["established"]
+                                 if e["plug"]["plug"] != "camera"]
+        conns["undesired"] = list(CONNECTIONS["undesired"]) + [
+            {"slot": {"snap": "snapd", "slot": "camera"},
+             "plug": {"snap": "firefox", "plug": "camera"},
+             "interface": "camera", "manual": True}]
+        conns["plugs"] = [dict(p) for p in CONNECTIONS["plugs"]]
+        win = self.load_win(connections=conns)
+        row = self.switch_row(win, "camera")
+        self.assertFalse(row.get_active())
+        row.emit("notify::active", None)
+        self.run_until(lambda: self.server.posts)
+        path, body, allowed = self.server.posts[0]
+        self.assertEqual(body["action"], "connect")
+
+    def test_tier2_connect_shows_confirmation(self):
+        conns = dict(CONNECTIONS)
+        conns["established"] = [e for e in CONNECTIONS["established"]
+                                 if e["plug"]["plug"] != "removable-media"]
+        conns["undesired"] = list(CONNECTIONS["undesired"]) + [
+            {"slot": {"snap": "snapd", "slot": "removable-media"},
+             "plug": {"snap": "firefox", "plug": "removable-media"},
+             "interface": "removable-media", "manual": True}]
+        conns["plugs"] = [dict(p) for p in CONNECTIONS["plugs"]]
+        win = self.load_win(connections=conns)
+        row = self.switch_row(win, "removable-media")
+        self.assertFalse(row.get_active())
+        row.emit("notify::active", None)
+        ctx = GLib.MainContext.default()
+        for _ in range(10):
+            ctx.iteration(False)
+        alert = [d for w in Gtk.Window.list_toplevels()
+                 for d in self.walk(w) if isinstance(d, Adw.AlertDialog)
+                 and "Connect" in d.get_heading()]
+        self.assertTrue(alert)
+        self.assertIn("/media", alert[0].get_body())
+        alert[0].emit("response", "cancel")
+        self.run_until(lambda: self.switch_row(win, "removable-media")
+                       is not None)
+        row = self.switch_row(win, "removable-media")
+        self.assertFalse(row.get_active())
+
+    def test_disconnect_confirmation_required_tier1(self):
+        win = self.load_win()
+        row = self.switch_row(win, "camera")
+        row.emit("notify::active", None)
+        ctx = GLib.MainContext.default()
+        for _ in range(10):
+            ctx.iteration(False)
+        alert = [d for w in Gtk.Window.list_toplevels()
+                 for d in self.walk(w) if isinstance(d, Adw.AlertDialog)
+                 and "Disconnect" in d.get_heading()]
+        self.assertTrue(alert)
+        self.assertIn("may stop working", alert[0].get_body()
+                      if "camera" in alert[0].get_body()
+                      else changes.confirmation_body(
+                          "disconnect", "camera", "camera", 1))
+        self.assertEqual(self.server.posts, [])
+        alert[0].emit("response", "cancel")
+        self.run_until(lambda: self.switch_row(win, "camera") is not None)
+        row = self.switch_row(win, "camera")
+        self.assertTrue(row.get_active())
+
+    def test_tier3_connect_not_offered(self):
+        conns = dict(CONNECTIONS)
+        conns["slots"] = list(CONNECTIONS["slots"]) + [
+            {"snap": "snapd", "slot": "docker-support",
+             "interface": "docker-support", "connections": []}]
+        win = self.load_win(connections=conns)
+        row = self.switch_row(win, "docker-support")
+        self.assertFalse(row.get_active())
+        self.assertIn("Connect not offered", row.get_subtitle())
+        self.assertFalse(row.get_sensitive())
+
+    def test_busy_flag_blocks_second_change(self):
+        win = self.load_win()
+        row = self.switch_row(win, "camera")
+        self.server.delay = 0.5
+        row.emit("notify::active", None)
+        self.run_until(lambda: win.busy is True)
+        row2 = self.switch_row(win, "network")
+        row2.emit("notify::active", None)
+        self.assertTrue(row2.get_active())
+        self.run_until(lambda: win.busy is False)
+        self.assertEqual(len(self.server.posts), 1)
+        self.server.delay = 0
+
+    def test_undo_toast_sends_inverse(self):
+        win = self.load_win()
+        row = self.switch_row(win, "camera")
+        row.emit("notify::active", None)
+        self.run_until(lambda: win.busy is False)
+        toast = win.last_toast
+        self.assertIsNotNone(toast)
+        self.assertIn("Disconnected camera", toast.get_title())
+        toast.emit("clicked")
+        self.run_until(lambda: len(self.server.posts) >= 2)
+        path, body, allowed = self.server.posts[1]
+        self.assertEqual(body["action"], "connect")
+        self.assertEqual(body["plugs"][0]["plug"], "camera")
+        self.run_until(lambda: win.busy is False)
 
 
 class PackagingTests(unittest.TestCase):

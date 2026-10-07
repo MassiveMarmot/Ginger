@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import os
 import sys
+import threading
 
 import gi
 
@@ -9,6 +10,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 import baseline
+import changes
 import interfaces
 from snapd_client import Client, SnapdError
 
@@ -44,6 +46,10 @@ class Window(Adw.ApplicationWindow):
         self.connections = {}
         self.connections_by_snap = {}
         self.baselines = {}
+        self.baseline_problem = None
+        self.busy = False
+        self.suppress_switch_handler = False
+        self.last_toast = None
 
         self.sidebar_rows = Gtk.ListBox(css_classes=["navigation-sidebar"])
         self.sidebar_rows.connect("row-activated", self.on_page_selected)
@@ -91,8 +97,10 @@ class Window(Adw.ApplicationWindow):
             button_label="Forget")
         self.baseline_banner.connect("button-clicked",
                                      lambda *a: self.confirm_forget())
+        self.toast_overlay = Adw.ToastOverlay()
+        self.toast_overlay.set_child(self.page_stack)
         overlay = Gtk.Overlay()
-        overlay.set_child(self.page_stack)
+        overlay.set_child(self.toast_overlay)
         overlay.add_overlay(self.baseline_banner)
 
         self.build_sidebar()
@@ -392,30 +400,179 @@ class Window(Adw.ApplicationWindow):
         if not plugs:
             group.add(Adw.ActionRow(title="No interfaces", use_markup=False))
             return group
+        has_baseline = name in self.baselines
         for plug in plugs:
-            row = Adw.SwitchRow(title=plug["name"],
-                                subtitle=plug["interface"] + " \u00b7 "
-                                + plug["state"],
-                                use_markup=False)
-            row.set_active(plug["connected"])
-            if plug["connected"]:
-                if plug["conn_slot"] is not None:
-                    row.plug_slot = plug["conn_slot"]
-            elif plug["n_slots"] == 0:
-                row.set_subtitle(plug["interface"] + " \u00b7 No slot available")
-            elif plug["n_slots"] > 1:
-                row.set_subtitle(plug["interface"]
-                                + " \u00b7 Several slots available")
-            elif plug["slot"] is not None:
-                row.plug_slot = plug["slot"]
-            if plug["tier"] == 3 and not plug["connected"]:
-                row.set_subtitle(plug["interface"]
-                                + " \u00b7 " + plug["state"]
-                                + " \u00b7 " + "Connect not offered")
-            row.plug_info = plug
-            row.set_sensitive(False)
-            group.add(row)
+            group.add(self.plug_row(name, plug, has_baseline))
         return group
+
+    def plug_row(self, snap_name, plug, has_baseline):
+        row = Adw.SwitchRow(title=plug["name"],
+                            subtitle=plug["interface"] + " \u00b7 "
+                            + plug["state"],
+                            use_markup=False)
+        row.plug_info = plug
+        row.plug_snap = snap_name
+        row.plug_name = plug["name"]
+        self.set_switch_active(row, plug["connected"])
+        slot = None
+        if plug["connected"]:
+            slot = plug["conn_slot"]
+        elif plug["tier"] == 3:
+            row.set_subtitle(plug["interface"] + " \u00b7 " + plug["state"]
+                            + " \u00b7 Connect not offered")
+        elif plug["n_slots"] == 0:
+            row.set_subtitle(plug["interface"] + " \u00b7 No slot available")
+        elif plug["n_slots"] > 1:
+            row.set_subtitle(plug["interface"]
+                            + " \u00b7 Several slots available")
+        else:
+            slot = plug["slot"]
+        row.plug_slot = slot
+        if slot is None or plug["tier"] == 3 and not plug["connected"]:
+            row.set_sensitive(False)
+        elif not has_baseline or self.baseline_problem is not None:
+            row.set_sensitive(False)
+            if not has_baseline:
+                row.set_tooltip_text(
+                    "No saved original state for this snap yet; "
+                    "restart Ginger to take one")
+        row.connect("notify::active", self.on_switch_toggled)
+        return row
+
+    def set_switch_active(self, row, active):
+        self.suppress_switch_handler = True
+        try:
+            row.set_active(active)
+        finally:
+            self.suppress_switch_handler = False
+
+    def on_switch_toggled(self, row, pspec):
+        if self.suppress_switch_handler:
+            return
+        if self.busy:
+            self.set_switch_active(row, not row.get_active())
+            return
+        plug = row.plug_info
+        snap_name = row.plug_snap
+        if snap_name not in self.baselines or self.baseline_problem \
+                or row.plug_slot is None:
+            self.set_switch_active(row, plug["connected"])
+            return
+        action = "connect" if row.get_active() else "disconnect"
+        if changes.needs_confirmation(action, plug["interface"],
+                                      plug["tier"]):
+            self.confirm_change(row, snap_name, plug, action)
+        else:
+            self.start_change(row, snap_name, plug, action)
+
+    def confirm_change(self, row, snap_name, plug, action):
+        self.set_switch_active(row, not row.get_active())
+        body = changes.confirmation_body(action, plug["name"],
+                                         plug["interface"], plug["tier"])
+        if action == "connect":
+            heading = "Connect %s?" % GLib.markup_escape_text(plug["name"])
+            label = "Connect"
+        else:
+            heading = "Disconnect %s?" \
+                % GLib.markup_escape_text(plug["name"])
+            label = "Disconnect"
+        alert = Adw.AlertDialog(heading=heading,
+                                body=GLib.markup_escape_text(body))
+        alert.add_response("cancel", "Cancel")
+        alert.add_response("confirm", label)
+        if action == "disconnect":
+            alert.set_response_appearance(
+                "confirm", Adw.ResponseAppearance.DESTRUCTIVE)
+        alert.choose(self, None, self.on_change_confirmed,
+                     (row, snap_name, plug, action))
+
+    def on_change_confirmed(self, source, result, data):
+        row, snap_name, plug, action = data
+        if source.choose_finish(result) != "confirm":
+            return
+        self.start_change(row, snap_name, plug, action)
+
+    def start_change(self, row, snap_name, plug, action):
+        self.busy = True
+        self.set_switch_active(row, action == "connect")
+        row.set_sensitive(False)
+        spinner = Gtk.Spinner(spinning=True)
+        row.add_suffix(spinner)
+        row.change_spinner = spinner
+        slot_snap, slot = row.plug_slot
+        threading.Thread(
+            target=self.change_worker,
+            args=(action, snap_name, plug["name"], slot_snap, slot),
+            daemon=True).start()
+
+    def change_worker(self, action, snap_name, plug, slot_snap, slot):
+        outcome, message = changes.run_change(
+            self.client, action, snap_name, plug, slot_snap, slot)
+        GLib.idle_add(self.change_done, action, snap_name, plug,
+                      outcome, message)
+
+    def change_done(self, action, snap_name, plug, outcome, message):
+        self.busy = False
+        self.load()
+        if outcome == changes.OUTCOME_DONE:
+            self.show_undo_toast(action, snap_name, plug)
+        elif outcome == changes.OUTCOME_CANCELLED:
+            pass
+        elif outcome == changes.OUTCOME_TIMEOUT:
+            toast = Adw.Toast(title="State unknown, reloaded")
+            if hasattr(toast.props, "use_markup"):
+                toast.set_use_markup(False)
+            self.last_toast = toast
+            self.toast_overlay.add_toast(toast)
+        else:
+            alert = Adw.AlertDialog(
+                heading="snapd returned an error",
+                body=GLib.markup_escape_text(message or ""))
+            alert.add_response("ok", "OK")
+            alert.present(self)
+        return False
+
+    def show_undo_toast(self, action, snap_name, plug):
+        inverse = "disconnect" if action == "connect" else "connect"
+        verb = "Connected" if action == "connect" else "Disconnected"
+        toast = Adw.Toast(title="%s %s" % (verb, GLib.markup_escape_text(plug)))
+        if hasattr(toast.props, "use_markup"):
+            toast.set_use_markup(False)
+        toast.add_button("Undo", "undo")
+        toast.connect("clicked", lambda t: self.undo_action(
+            t, snap_name, plug, inverse))
+        self.last_toast = toast
+        self.toast_overlay.add_toast(toast)
+
+    def undo_action(self, toast, snap_name, plug, inverse):
+        toast.dismiss()
+        connections = self.connections_by_snap.get(snap_name) or {}
+        plugs = interfaces.derive_plugs(connections, snap_name,
+                                        show_all=True)
+        info = next((p for p in plugs if p["name"] == plug), None)
+        row = self.find_plug_row(snap_name, plug)
+        if info is None or row is None:
+            return
+        slot = info["conn_slot"] if inverse == "disconnect" \
+            else info["slot"]
+        if inverse == "connect" and (slot is None or info["tier"] == 3):
+            return
+        row.plug_slot = slot
+        self.set_switch_active(row, inverse == "connect")
+        if changes.needs_confirmation(inverse, info["interface"],
+                                      info["tier"]):
+            self.confirm_change(row, snap_name, info, inverse)
+        else:
+            self.start_change(row, snap_name, info, inverse)
+
+    def find_plug_row(self, snap_name, plug):
+        if snap_name != self.selected_snap:
+            return None
+        for row in self.walk(self.detail_bin.get_child()):
+            if isinstance(row, Adw.SwitchRow) \
+                    and getattr(row, "plug_name", None) == plug:
+                return row
+        return None
 
     def copy_text(self, button, text):
         self.get_clipboard().set_text(text)
