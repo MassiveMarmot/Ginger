@@ -604,6 +604,14 @@ class UISmokeTests(unittest.TestCase):
         finally:
             os.chmod(data_dir, 0o700)
 
+    def toggle_switch(self, row):
+        # Click the real switch child, like a user does.
+        for child in self.walk(row):
+            if isinstance(child, Gtk.Switch):
+                child.emit("activate")
+                return
+        raise AssertionError("no switch inside row")
+
     def confirm_alert(self, heading_part, response):
         ctx = GLib.MainContext.default()
         for _ in range(20):
@@ -621,7 +629,7 @@ class UISmokeTests(unittest.TestCase):
         win = self.load_win()
         row = self.switch_row(win, "camera")
         self.assertTrue(row.get_active())
-        row.emit("notify::active", None)
+        self.toggle_switch(row)
         self.assertIsNotNone(self.confirm_alert("Disconnect", "confirm"))
         self.run_until(lambda: self.server.posts)
         path, body, allowed = self.server.posts[0]
@@ -639,7 +647,7 @@ class UISmokeTests(unittest.TestCase):
         self.server.change_script["1"] = [
             {"status": "Error", "ready": True, "err": "<b>nope</b>&amp;",
              "summary": "failed"}]
-        row.emit("notify::active", None)
+        self.toggle_switch(row)
         self.confirm_alert("Disconnect", "confirm")
         self.run_until(lambda: win.busy is False)
         error = [d for w in Gtk.Window.list_toplevels()
@@ -657,7 +665,7 @@ class UISmokeTests(unittest.TestCase):
             "type": "error", "status-code": 403,
             "result": {"message": "cancelled",
                        "kind": "auth-cancelled"}}))
-        row.emit("notify::active", None)
+        self.toggle_switch(row)
         self.confirm_alert("Disconnect", "confirm")
         self.run_until(lambda: win.busy is False)
         self.run_until(lambda: self.switch_row(win, "camera") is not None)
@@ -676,7 +684,7 @@ class UISmokeTests(unittest.TestCase):
         win = self.load_win(connections=conns)
         row = self.switch_row(win, "camera")
         self.assertFalse(row.get_active())
-        row.emit("notify::active", None)
+        self.toggle_switch(row)
         self.run_until(lambda: self.server.posts)
         path, body, allowed = self.server.posts[0]
         self.assertEqual(body["action"], "connect")
@@ -693,7 +701,7 @@ class UISmokeTests(unittest.TestCase):
         win = self.load_win(connections=conns)
         row = self.switch_row(win, "removable-media")
         self.assertFalse(row.get_active())
-        row.emit("notify::active", None)
+        self.toggle_switch(row)
         ctx = GLib.MainContext.default()
         for _ in range(10):
             ctx.iteration(False)
@@ -715,7 +723,7 @@ class UISmokeTests(unittest.TestCase):
     def test_disconnect_confirmation_cancel_reverts(self):
         win = self.load_win()
         row = self.switch_row(win, "camera")
-        row.emit("notify::active", None)
+        self.toggle_switch(row)
         ctx = GLib.MainContext.default()
         for _ in range(10):
             ctx.iteration(False)
@@ -747,11 +755,11 @@ class UISmokeTests(unittest.TestCase):
         win = self.load_win()
         row = self.switch_row(win, "camera")
         self.server.delay = 0.5
-        row.emit("notify::active", None)
+        self.toggle_switch(row)
         self.confirm_alert("Disconnect", "confirm")
         self.run_until(lambda: win.busy is True)
         row2 = self.switch_row(win, "network")
-        row2.emit("notify::active", None)
+        self.toggle_switch(row2)
         self.assertTrue(row2.get_active())
         self.run_until(lambda: win.busy is False)
         self.assertEqual(len(self.server.posts), 1)
@@ -760,7 +768,7 @@ class UISmokeTests(unittest.TestCase):
     def test_undo_toast_sends_inverse(self):
         win = self.load_win()
         row = self.switch_row(win, "camera")
-        row.emit("notify::active", None)
+        self.toggle_switch(row)
         self.confirm_alert("Disconnect", "confirm")
         self.run_until(lambda: win.busy is False)
         toast = win.last_toast
