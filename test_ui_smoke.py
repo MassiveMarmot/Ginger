@@ -434,10 +434,9 @@ class UISmokeTests(unittest.TestCase):
         win = self.make_window()
         win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
         titles = [r.get_title() for r in self.permission_rows(win)]
-        self.assertEqual(titles.index("camera")
-                         < titles.index("audio-record")
-                         < titles.index("removable-media")
-                         < titles.index("docker-support"), True)
+        self.assertEqual(titles, ["audio-record", "camera", "network",
+                                 "orphan", "removable-media",
+                                 "docker-support"])
 
     def test_tier_3_connect_not_offered(self):
         self.server.snaps = [dict(SNAP_APP)]
