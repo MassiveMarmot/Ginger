@@ -11,6 +11,7 @@ DEFAULT_SOCKET = "/run/snapd.socket"
 POLL_INTERVAL_START = 0.5
 POLL_INTERVAL_MAX = 2.0
 POLL_TIMEOUT = 60.0
+MUTATION_TIMEOUT = 120
 
 
 class SnapdError(Exception):
@@ -42,16 +43,19 @@ class Client:
         self.socket_path = socket_path or os.environ.get("SNAPD_SOCKET",
                                                          DEFAULT_SOCKET)
 
-    def _request(self, method, path, body=None, allow_interaction=False):
+    def _request(self, method, path, body=None, allow_interaction=False,
+                 timeout=10):
         data = json.dumps(body).encode() if body is not None else None
         headers = {"Content-Type": "application/json"}
         if allow_interaction:
             headers["X-Allow-Interaction"] = "true"
-        conn = UnixHTTPConnection(self.socket_path)
+        conn = UnixHTTPConnection(self.socket_path, timeout=timeout)
         try:
             conn.request(method, path, body=data, headers=headers)
             resp = conn.getresponse()
             raw = resp.read()
+        except socket.timeout as e:
+            raise SnapdError(str(e), kind="request-timeout")
         except OSError as e:
             raise SnapdError(str(e), kind="connection-failed")
         finally:
@@ -88,12 +92,15 @@ class Client:
             raise SnapdError("unexpected connections response")
         return result
 
-    def change_interface(self, action, plug_snap, plug, slot_snap, slot):
+    def change_interface(self, action, plug_snap, plug, slot_snap, slot,
+                         timeout=MUTATION_TIMEOUT):
+        if action not in ("connect", "disconnect"):
+            raise SnapdError("invalid action: %s" % action)
         body = {"action": action,
                 "plugs": [{"snap": plug_snap, "plug": plug}],
                 "slots": [{"snap": slot_snap, "slot": slot}]}
         payload = self._request("POST", "/v2/interfaces", body,
-                               allow_interaction=True)
+                                allow_interaction=True, timeout=timeout)
         change = payload.get("change")
         if not change:
             raise SnapdError("snapd did not return a change id")
