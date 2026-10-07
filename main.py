@@ -67,6 +67,10 @@ class Window(Adw.ApplicationWindow):
         about = Gio.SimpleAction.new("about", None)
         about.connect("activate", lambda *a: self.show_about())
         self.add_action(about)
+        forget = Gio.SimpleAction.new("forget-baseline", None)
+        forget.connect("activate", lambda *a: self.confirm_forget())
+        self.add_action(forget)
+        menu.append("Forget saved original state…", "win.forget-baseline")
         sidebar_header.pack_end(Gtk.MenuButton(
             icon_name="open-menu-symbolic", menu_model=menu,
             tooltip_text="Main Menu"))
@@ -82,11 +86,19 @@ class Window(Adw.ApplicationWindow):
         self.page_stack.add_named(self.snaps_page, "snaps")
         self.page_stack.add_named(self.error_wrapper, "error")
 
+        self.baseline_banner = Adw.Banner(
+            title="Could not read the saved original state",
+            button_label="Forget")
+        self.baseline_banner.connect("button-clicked", self.on_forget_clicked)
+        overlay = Gtk.Overlay()
+        overlay.set_child(self.page_stack)
+        overlay.add_overlay(self.baseline_banner)
+
         self.build_sidebar()
         self.sidebar_rows.select_row(self.sidebar_rows.get_row_at_index(0))
 
         self.main_split.set_sidebar(sidebar)
-        self.main_split.set_content(self.page_stack)
+        self.main_split.set_content(overlay)
         self.set_content(self.main_split)
 
         self.setup_breakpoints()
@@ -351,6 +363,26 @@ class Window(Adw.ApplicationWindow):
             box.append(self.permissions_group(name, connections))
         self.detail_bin.set_child(box)
 
+    def confirm_forget(self):
+        alert = Adw.AlertDialog(
+            heading="Forget saved original state?",
+            body="Deletes the saved original connections of every snap. "
+                 "A new original state is taken at the next launch.")
+        alert.add_response("cancel", "Cancel")
+        alert.add_response("forget", "Forget")
+        alert.set_response_appearance(
+            "forget", Adw.ResponseAppearance.DESTRUCTIVE)
+        alert.choose(self, None, self.on_forget_confirmed, None)
+
+    def on_forget_confirmed(self, source, result, _):
+        if source.choose_finish(result) != "forget":
+            return
+        self.on_forget_clicked()
+
+    def on_forget_clicked(self, *args):
+        baseline.forget()
+        self.load()
+
     def permissions_group(self, name, connections):
         group = Adw.PreferencesGroup(
             title=GLib.markup_escape_text("Permissions"))
@@ -405,21 +437,31 @@ class Window(Adw.ApplicationWindow):
                 self.show_error("snapd returned an error", e.message,
                                 "dialog-warning-symbolic")
             return
+        self.baselines = {}
+        baseline_problem = None
         try:
             self.baselines = baseline.load()
         except baseline.BaselineError as e:
-            self.baselines = {}
-            self.show_error("Could not read the saved original state",
-                            str(e), "dialog-warning-symbolic")
-            return
+            baseline_problem = str(e)
         self.snaps = [s for s in snaps if isinstance(s, dict)]
         self.connections_by_snap = {}
         for name in self.snap_names():
             self.connections_by_snap[name] = self.connections
-        new = baseline.capture_new(self.baselines, self.connections_by_snap)
-        if new:
-            self.baselines.update(new)
-            baseline.save_snaps(self.baselines)
+        if baseline_problem is None:
+            new = baseline.capture_new(self.baselines,
+                                       self.connections_by_snap)
+            if new:
+                try:
+                    baseline.save_snaps({**self.baselines, **new})
+                except OSError as e:
+                    baseline_problem = \
+                        "Could not save the original state: %s" % e
+                else:
+                    self.baselines.update(new)
+        if baseline_problem is not None:
+            self.baseline_banner.set_revealed(True)
+        else:
+            self.baseline_banner.set_revealed(False)
         if self.selected_snap not in self.snap_names():
             self.selected_snap = None
         if self.search_entry.get_text() != self.query:
