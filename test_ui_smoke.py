@@ -412,14 +412,6 @@ class UISmokeTests(unittest.TestCase):
         self.assertIn("No slot available", orphan.get_subtitle())
         self.assertFalse(orphan.get_sensitive())
 
-    def test_switches_insensitive_in_milestone_3(self):
-        self.server.snaps = [dict(SNAP_APP)]
-        self.server.default_connections = CONNECTIONS
-        win = self.make_window()
-        win.on_snap_selected(win.snaps_list, win.snaps_list.get_row_at_index(0))
-        for row in self.permission_rows(win):
-            self.assertFalse(row.get_sensitive())
-
     def test_content_plug_hidden_by_default(self):
         self.server.snaps = [dict(SNAP_APP)]
         self.server.default_connections = CONNECTIONS
@@ -610,11 +602,25 @@ class UISmokeTests(unittest.TestCase):
             fresh.cleanup()
             os.environ["GINGER_DATA_DIR"] = self.prev_dir
 
+    def confirm_alert(self, heading_part, response):
+        ctx = GLib.MainContext.default()
+        for _ in range(20):
+            found = [d for w in Gtk.Window.list_toplevels()
+                     for d in self.walk(w)
+                     if isinstance(d, Adw.AlertDialog)
+                     and heading_part in d.get_heading()]
+            if found:
+                found[0].emit("response", response)
+                return found[0]
+            ctx.iteration(False)
+        return None
+
     def test_header_sent_and_202_to_done(self):
         win = self.load_win()
         row = self.switch_row(win, "camera")
         self.assertTrue(row.get_active())
         row.emit("notify::active", None)
+        self.assertIsNotNone(self.confirm_alert("Disconnect", "confirm"))
         self.run_until(lambda: self.server.posts)
         path, body, allowed = self.server.posts[0]
         self.assertEqual(path, "/v2/interfaces")
@@ -632,6 +638,7 @@ class UISmokeTests(unittest.TestCase):
             {"status": "Error", "ready": True, "err": "<b>nope</b>&amp;",
              "summary": "failed"}]
         row.emit("notify::active", None)
+        self.confirm_alert("Disconnect", "confirm")
         self.run_until(lambda: win.busy is False)
         error = [d for w in Gtk.Window.list_toplevels()
                  for d in self.walk(w) if isinstance(d, Adw.AlertDialog)
@@ -649,6 +656,7 @@ class UISmokeTests(unittest.TestCase):
             "result": {"message": "cancelled",
                        "kind": "auth-cancelled"}}))
         row.emit("notify::active", None)
+        self.confirm_alert("Disconnect", "confirm")
         self.run_until(lambda: win.busy is False)
         self.run_until(lambda: self.switch_row(win, "camera") is not None)
         row = self.switch_row(win, "camera")
@@ -692,13 +700,17 @@ class UISmokeTests(unittest.TestCase):
                  and "Connect" in d.get_heading()]
         self.assertTrue(alert)
         self.assertIn("/media", alert[0].get_body())
-        alert[0].emit("response", "cancel")
+        alert[0].emit("response", "confirm")
+        self.run_until(lambda: self.server.posts)
+        path, body, allowed = self.server.posts[0]
+        self.assertEqual(body["action"], "connect")
+        self.run_until(lambda: win.busy is False)
         self.run_until(lambda: self.switch_row(win, "removable-media")
                        is not None)
         row = self.switch_row(win, "removable-media")
         self.assertFalse(row.get_active())
 
-    def test_disconnect_confirmation_required_tier1(self):
+    def test_disconnect_confirmation_cancel_reverts(self):
         win = self.load_win()
         row = self.switch_row(win, "camera")
         row.emit("notify::active", None)
@@ -709,10 +721,9 @@ class UISmokeTests(unittest.TestCase):
                  for d in self.walk(w) if isinstance(d, Adw.AlertDialog)
                  and "Disconnect" in d.get_heading()]
         self.assertTrue(alert)
-        self.assertIn("may stop working", alert[0].get_body()
-                      if "camera" in alert[0].get_body()
-                      else changes.confirmation_body(
-                          "disconnect", "camera", "camera", 1))
+        self.assertEqual(alert[0].get_body(),
+                         changes.confirmation_body(
+                             "disconnect", "camera", "camera", 1))
         self.assertEqual(self.server.posts, [])
         alert[0].emit("response", "cancel")
         self.run_until(lambda: self.switch_row(win, "camera") is not None)
@@ -735,6 +746,7 @@ class UISmokeTests(unittest.TestCase):
         row = self.switch_row(win, "camera")
         self.server.delay = 0.5
         row.emit("notify::active", None)
+        self.confirm_alert("Disconnect", "confirm")
         self.run_until(lambda: win.busy is True)
         row2 = self.switch_row(win, "network")
         row2.emit("notify::active", None)
@@ -747,6 +759,7 @@ class UISmokeTests(unittest.TestCase):
         win = self.load_win()
         row = self.switch_row(win, "camera")
         row.emit("notify::active", None)
+        self.confirm_alert("Disconnect", "confirm")
         self.run_until(lambda: win.busy is False)
         toast = win.last_toast
         self.assertIsNotNone(toast)

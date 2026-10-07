@@ -470,14 +470,12 @@ class Window(Adw.ApplicationWindow):
         body = changes.confirmation_body(action, plug["name"],
                                          plug["interface"], plug["tier"])
         if action == "connect":
-            heading = "Connect %s?" % GLib.markup_escape_text(plug["name"])
+            heading = "Connect %s?" % plug["name"]
             label = "Connect"
         else:
-            heading = "Disconnect %s?" \
-                % GLib.markup_escape_text(plug["name"])
+            heading = "Disconnect %s?" % plug["name"]
             label = "Disconnect"
-        alert = Adw.AlertDialog(heading=heading,
-                                body=GLib.markup_escape_text(body))
+        alert = Adw.AlertDialog(heading=heading, body=body)
         alert.add_response("cancel", "Cancel")
         alert.add_response("confirm", label)
         if action == "disconnect":
@@ -519,27 +517,30 @@ class Window(Adw.ApplicationWindow):
         elif outcome == changes.OUTCOME_CANCELLED:
             pass
         elif outcome == changes.OUTCOME_TIMEOUT:
-            toast = Adw.Toast(title="State unknown, reloaded")
-            if hasattr(toast.props, "use_markup"):
-                toast.set_use_markup(False)
+            toast = self.make_toast("State unknown, reloaded")
             self.last_toast = toast
             self.toast_overlay.add_toast(toast)
         else:
-            alert = Adw.AlertDialog(
-                heading="snapd returned an error",
-                body=GLib.markup_escape_text(message or ""))
+            alert = Adw.AlertDialog(heading="snapd returned an error",
+                                    body=message or "")
             alert.add_response("ok", "OK")
             alert.present(self)
         return False
 
+    def make_toast(self, title):
+        toast = Adw.Toast(title=title)
+        if hasattr(toast.props, "use_markup"):
+            toast.set_use_markup(False)
+        else:
+            toast.set_title(GLib.markup_escape_text(title))
+        return toast
+
     def show_undo_toast(self, action, snap_name, plug):
         inverse = "disconnect" if action == "connect" else "connect"
         verb = "Connected" if action == "connect" else "Disconnected"
-        toast = Adw.Toast(title="%s %s" % (verb, GLib.markup_escape_text(plug)))
-        if hasattr(toast.props, "use_markup"):
-            toast.set_use_markup(False)
+        toast = self.make_toast("%s %s" % (verb, plug))
         toast.add_button("Undo", "undo")
-        toast.connect("clicked", lambda t: self.undo_action(
+        toast.connect("button-clicked", lambda t: self.undo_action(
             t, snap_name, plug, inverse))
         self.last_toast = toast
         self.toast_overlay.add_toast(toast)
