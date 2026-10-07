@@ -1,0 +1,24 @@
+app-id: io.github.massivemarmot.Ginger
+runtime: org.gnome.Platform
+runtime-version: "49"
+sdk: org.gnome.Sdk
+command: ginger
+# The only privilege is read/write access to the snapd socket.
+# Ginger uses it to list snaps and review their interface connections.
+finish-args:
+  - --socket=wayland
+  - --filesystem=/run/snapd.socket
+modules:
+  - name: ginger
+    buildsystem: simple
+    build-commands:
+      - install -Dm644 -t /app/share/ginger main.py snapd_client.py
+      - install -Dm755 ginger-launcher /app/bin/ginger
+      - install -Dm644 data/io.github.massivemarmot.Ginger.desktop /app/share/applications/io.github.massivemarmot.Ginger.desktop
+      - install -Dm644 data/io.github.massivemarmot.Ginger.metainfo.xml /app/share/metainfo/io.github.massivemarmot.Ginger.metainfo.xml
+      - install -Dm644 data/icons/hicolor/scalable/apps/io.github.massivemarmot.Ginger.svg /app/share/icons/hicolor/scalable/apps/io.github.massivemarmot.Ginger.svg
+      - install -Dm644 data/icons/hicolor/symbolic/apps/io.github.massivemarmot.Ginger-symbolic.svg /app/share/icons/hicolor/symbolic/apps/io.github.massivemarmot.Ginger-symbolic.svg
+      - install -Dm644 icons/hicolor/scalable/actions/funnel-symbolic.svg /app/share/icons/hicolor/scalable/actions/funnel-symbolic.svg
+    sources:
+      - type: dir
+        path: .

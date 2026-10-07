@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.massivemarmot.Ginger</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Ginger</name>
+  <summary>Ginger for Snaps</summary>
+  <description>
+    <p>Ginger lists the snaps installed on your system and lets you review
+    and change each snap's interface connections, the permissions behind
+    snap connect and snap disconnect.</p>
+  </description>
+  <launchable type="desktop-id">io.github.massivemarmot.Ginger.desktop</launchable>
+  <developer id="io.github.massivemarmot">
+    <name>MassiveMarmot</name>
+  </developer>
+  <url type="homepage">https://github.com/MassiveMarmot/Ginger</url>
+  <url type="bugtracker">https://github.com/MassiveMarmot/Ginger</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-05"/>
+  </releases>
+</component>

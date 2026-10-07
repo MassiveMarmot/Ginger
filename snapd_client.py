@@ -3,19 +3,14 @@ import http.client
 import json
 import os
 import socket
+import time
 import urllib.parse
 
+
 DEFAULT_SOCKET = "/run/snapd.socket"
-
-# UNVERIFIED: permission names other than "read". Likely "write", "execute".
-PERMISSIONS = ("read", "write", "execute")
-# UNVERIFIED: lifespan values other than "forever" and "session".
-LIFESPANS = ("forever", "session")
-# UNVERIFIED: outcome value "deny".
-OUTCOMES = ("allow", "deny")
-
-PROMPTING_NOT_RUNNING = "apparmor-prompting-not-running"
-RULE_NOT_FOUND = "interfaces-requests-rule-not-found"
+POLL_INTERVAL_START = 0.5
+POLL_INTERVAL_MAX = 2.0
+POLL_TIMEOUT = 60.0
 
 
 class SnapdError(Exception):
@@ -47,12 +42,14 @@ class Client:
         self.socket_path = socket_path or os.environ.get("SNAPD_SOCKET",
                                                          DEFAULT_SOCKET)
 
-    def _request(self, method, path, body=None):
+    def _request(self, method, path, body=None, allow_interaction=False):
         data = json.dumps(body).encode() if body is not None else None
+        headers = {"Content-Type": "application/json"}
+        if allow_interaction:
+            headers["X-Allow-Interaction"] = "true"
         conn = UnixHTTPConnection(self.socket_path)
         try:
-            conn.request(method, path, body=data,
-                         headers={"Content-Type": "application/json"})
+            conn.request(method, path, body=data, headers=headers)
             resp = conn.getresponse()
             raw = resp.read()
         except OSError as e:
@@ -73,36 +70,58 @@ class Client:
                 result = {}
             raise SnapdError(result.get("message", "snapd error"),
                              kind=result.get("kind"), status_code=resp.status)
-        return payload.get("result")
-
-    def list_rules(self):
-        rules = self._request("GET", "/v2/interfaces/requests/rules")
-        if not isinstance(rules, list):
-            raise SnapdError("unexpected rules response")
-        return rules
-
-    def add_rule(self, snap, path_pattern, permission="read",
-                 outcome="allow", lifespan="forever"):
-        body = {
-            "action": "add",
-            "rule": {
-                "snap": snap,
-                "interface": "home",
-                "constraints": {
-                    "path-pattern": path_pattern,
-                    "permissions": {
-                        permission: {"outcome": outcome, "lifespan": lifespan},
-                    },
-                },
-            },
-        }
-        return self._request("POST", "/v2/interfaces/requests/rules", body)
-
-    def remove_rule(self, rule_id):
-        if not rule_id:
-            raise SnapdError("empty rule id")
-        path = "/v2/interfaces/requests/rules/" + urllib.parse.quote(rule_id, safe="")
-        return self._request("POST", path, {"action": "remove"})
+        return payload
 
     def list_snaps(self):
-        return self._request("GET", "/v2/snaps")
+        result = self._request("GET", "/v2/snaps")
+        if not isinstance(result.get("result"), list):
+            raise SnapdError("unexpected snaps response")
+        return result["result"]
+
+    def list_connections(self, snap=None, select="all"):
+        query = {"select": select}
+        if snap is not None:
+            query["snap"] = snap
+        path = "/v2/connections?" + urllib.parse.urlencode(query)
+        result = self._request("GET", path).get("result")
+        if not isinstance(result, dict):
+            raise SnapdError("unexpected connections response")
+        return result
+
+    def change_interface(self, action, plug_snap, plug, slot_snap, slot):
+        body = {"action": action,
+                "plugs": [{"snap": plug_snap, "plug": plug}],
+                "slots": [{"snap": slot_snap, "slot": slot}]}
+        payload = self._request("POST", "/v2/interfaces", body,
+                               allow_interaction=True)
+        change = payload.get("change")
+        if not change:
+            raise SnapdError("snapd did not return a change id")
+        return str(change)
+
+    def get_change(self, change_id):
+        path = "/v2/changes/" + urllib.parse.quote(str(change_id), safe="")
+        result = self._request("GET", path).get("result")
+        if not isinstance(result, dict):
+            raise SnapdError("unexpected change response")
+        return result
+
+    def wait_for_change(self, change_id, timeout=POLL_TIMEOUT,
+                        sleep=time.sleep, monotonic=time.monotonic):
+        deadline = monotonic() + timeout
+        interval = POLL_INTERVAL_START
+        while True:
+            change = self.get_change(change_id)
+            err = change.get("err")
+            if err:
+                raise SnapdError(str(err), kind="change-error")
+            if change.get("status") == "Done" and change.get("ready"):
+                return change
+            if change.get("ready") or change.get("status") == "Error":
+                raise SnapdError(str(change.get("summary") or "change failed"),
+                                 kind="change-error")
+            if monotonic() >= deadline:
+                raise SnapdError("Timed out waiting for change",
+                                 kind="change-timeout")
+            sleep(interval)
+            interval = min(interval * 2, POLL_INTERVAL_MAX)

@@ -1,38 +1,27 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import json
 import os
-import pwd
 import socket
 import tempfile
 import threading
 import unittest
 import urllib.parse
 
-from path_validation import is_broad_pattern, normalize_pattern
-from snapd_client import Client, SnapdError, PROMPTING_NOT_RUNNING
-
-RULE = {
-    "id": "1",
-    "timestamp": "2026-10-04T00:00:00Z",
-    "user": 1000,
-    "snap": "firefox",
-    "interface": "home",
-    "constraints": {
-        "path-pattern": "/home/user/docs/**",
-        "permissions": {
-            "read": {"outcome": "allow", "lifespan": "forever"},
-        },
-    },
-}
+from snapd_client import Client, SnapdError
 
 
 class MockSnapd:
     def __init__(self, socket_path):
         self.socket_path = socket_path
-        self.rules = []
         self.snaps = []
-        self.posts = []  # (path, parsed_json_body) in order
+        self.connections = {}  # snap name -> connections result dict
+        self.default_connections = {"established": [], "undesired": [],
+                                   "plugs": [], "slots": []}
+        self.posts = []  # (path, parsed_body, interaction_allowed) in order
         self.responses = []  # (status, body) overrides, consumed in order
+        self.interface_responses = []  # (status, body) for POST /v2/interfaces
+        self.change_script = {}  # change id -> [result dicts], consumed per poll
+        self.next_change_id = 1
         self.running = True
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(socket_path)
@@ -64,52 +53,82 @@ class MockSnapd:
                 head, body = data.split(b"\r\n\r\n", 1)
                 lines = head.split(b"\r\n")
                 method, path, _ = lines[0].decode().split(" ", 2)
+                headers = {}
                 length = 0
                 for line in lines[1:]:
                     name, _, value = line.decode().partition(":")
-                    if name.lower() == "content-length":
+                    headers[name.strip().lower()] = value.strip()
+                    if name.strip().lower() == "content-length":
                         length = int(value)
                 while len(body) < length:
                     chunk = conn.recv(4096)
                     if not chunk:
                         break
                     body += chunk
-                self._handle(conn, method, path, body)
+                self._handle(conn, method, path, body, headers)
 
-    def _handle(self, conn, method, path, body):
+    def _handle(self, conn, method, path, body, headers):
         if self.responses:
             status, payload = self.responses.pop(0)
-        elif method == "GET" and path == "/v2/interfaces/requests/rules":
+        elif method == "GET" and path.startswith("/v2/connections"):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+            snap = (query.get("snap") or [None])[0]
+            if snap is not None and snap in self.connections:
+                result = self.connections[snap]
+            else:
+                result = self.default_connections
             status, payload = 200, {"type": "sync", "status-code": 200,
-                                    "result": self.rules}
-        elif method == "POST" and path == "/v2/interfaces/requests/rules":
-            self.posts.append((path, json.loads(body)))
-            rule = json.loads(body)["rule"]
-            rule["id"] = str(len(self.rules) + 1)
-            self.rules.append(rule)
-            status, payload = 200, {"type": "sync", "status-code": 200,
-                                    "result": rule}
-        elif method == "GET" and path == "/v2/snaps":
-            status, payload = 200, {"type": "sync", "status-code": 200,
-                                    "result": self.snaps}
-        elif method == "POST" and path.startswith("/v2/interfaces/requests/rules/"):
-            self.posts.append((path, json.loads(body)))
-            rule_id = urllib.parse.unquote(path.rsplit("/", 1)[1])
-            if any(r.get("id") == rule_id for r in self.rules):
-                self.rules = [r for r in self.rules
-                              if r.get("id") != rule_id]
-                status, payload = 200, {"type": "sync", "status-code": 200,
-                                       "result": None}
+                                    "result": result}
+        elif method == "POST" and path == "/v2/interfaces":
+            parsed = json.loads(body)
+            self.posts.append((path, parsed,
+                               headers.get("x-allow-interaction") == "true"))
+            if self.interface_responses:
+                status, payload = self.interface_responses.pop(0)
+            elif headers.get("x-allow-interaction") != "true":
+                status, payload = 401, {
+                    "type": "error", "status-code": 401,
+                    "result": {"message": "access denied",
+                               "kind": "login-required"}}
+            else:
+                change_id = str(self.next_change_id)
+                self.next_change_id += 1
+                self.change_script.setdefault(
+                    change_id,
+                    [{"status": "Doing", "ready": False, "err": None},
+                     {"status": "Done", "ready": True, "err": None,
+                      "summary": "done"}])
+                status, payload = 202, {
+                    "type": "async", "status": "Accepted",
+                    "status-code": 202, "result": None,
+                    "change": change_id}
+        elif method == "GET" and path.startswith("/v2/changes/"):
+            change_id = urllib.parse.unquote(
+                path[len("/v2/changes/"):].split("?")[0])
+            script = self.change_script.get(change_id)
+            if script:
+                result = script.pop(0) if len(script) > 1 else script[0]
+                status, payload = 200, {"type": "sync",
+                                        "status-code": 200,
+                                        "result": result}
             else:
                 status, payload = 404, {
                     "type": "error", "status-code": 404,
-                    "result": {"message": "cannot find rule with the given ID",
-                               "kind": "interfaces-requests-rule-not-found"}}
+                    "result": {"message": "change not found",
+                               "kind": "not-found"}}
+        elif method == "GET" and path.startswith("/v2/change/"):
+            status, payload = 404, {
+                "type": "error", "status-code": 404,
+                "result": {"message": "not found", "kind": "not-found"}}
+        elif method == "GET" and path == "/v2/snaps":
+            status, payload = 200, {"type": "sync", "status-code": 200,
+                                    "result": self.snaps}
         else:
             status, payload = 404, {"type": "error", "status-code": 404,
                                     "result": {"message": "not found",
                                                "kind": "not-found"}}
-        wire = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        wire = payload if isinstance(payload, bytes) else \
+            json.dumps(payload).encode()
         conn.sendall(("HTTP/1.1 %d X\r\nContent-Length: %d\r\n\r\n"
                       % (status, len(wire))).encode())
         conn.sendall(wire)
@@ -126,51 +145,11 @@ class SnapdClientTests(unittest.TestCase):
         self.server.stop()
         self.tmpdir.cleanup()
 
-    def error_response(self, kind, message="error"):
-        self.server.responses.append((400, {
-            "type": "error", "status-code": 400,
+    def error_response(self, kind, message="error", status=400):
+        self.server.responses.append((status, {
+            "type": "error", "status-code": status,
             "result": {"message": message, "kind": kind},
         }))
-
-    def test_list_parsing(self):
-        self.server.rules = [RULE]
-        rules = self.client.list_rules()
-        self.assertEqual(rules, [RULE])
-
-    def test_add_success(self):
-        result = self.client.add_rule("firefox", "/home/user/docs/**")
-        self.assertEqual(result["snap"], "firefox")
-        self.assertEqual(self.server.rules[0]["constraints"]["path-pattern"],
-                         "/home/user/docs/**")
-
-    def test_add_error_with_kind(self):
-        self.error_response("interfaces-requests-rule-conflict", "conflict")
-        with self.assertRaises(SnapdError) as ctx:
-            self.client.add_rule("firefox", "/x/**")
-        self.assertEqual(ctx.exception.kind, "interfaces-requests-rule-conflict")
-        self.assertEqual(ctx.exception.message, "conflict")
-
-    def test_remove_success(self):
-        self.server.rules = [dict(RULE)]
-        self.client.remove_rule("1")
-        self.assertEqual(self.server.rules, [])
-
-    def test_remove_rejects_empty_id(self):
-        with self.assertRaises(SnapdError):
-            self.client.remove_rule("")
-
-    def test_remove_quotes_untrusted_id(self):
-        self.server.rules = [dict(RULE, id="a/b?c")]
-        self.client.remove_rule("a/b?c")
-        self.assertEqual(self.server.rules, [])
-        self.assertEqual(self.server.posts[0][0],
-                         "/v2/interfaces/requests/rules/a%2Fb%3Fc")
-
-    def test_prompting_not_running(self):
-        self.error_response(PROMPTING_NOT_RUNNING)
-        with self.assertRaises(SnapdError) as ctx:
-            self.client.list_rules()
-        self.assertEqual(ctx.exception.kind, PROMPTING_NOT_RUNNING)
 
     def test_list_snaps(self):
         self.server.snaps = [{"name": "firefox", "type": "app",
@@ -180,65 +159,222 @@ class SnapdClientTests(unittest.TestCase):
         self.assertEqual(len(snaps), 2)
         self.assertEqual(snaps[0]["name"], "firefox")
 
-    def test_connection_failure(self):
-        bad = Client(socket_path=os.path.join(self.tmpdir.name, "missing.socket"))
+    def test_error_with_kind(self):
+        self.error_response("some-kind", "conflict")
         with self.assertRaises(SnapdError) as ctx:
-            bad.list_rules()
+            self.client.list_snaps()
+        self.assertEqual(ctx.exception.kind, "some-kind")
+        self.assertEqual(ctx.exception.message, "conflict")
+
+    def test_connection_failure(self):
+        bad = Client(socket_path=os.path.join(self.tmpdir.name,
+                                              "missing.socket"))
+        with self.assertRaises(SnapdError) as ctx:
+            bad.list_snaps()
         self.assertEqual(ctx.exception.kind, "connection-failed")
 
     def test_malformed_json(self):
         self.server.responses.append((200, b"not-json"))
         with self.assertRaises(SnapdError) as ctx:
-            self.client.list_rules()
+            self.client.list_snaps()
         self.assertIn("malformed", ctx.exception.message)
 
     def test_non_dict_json(self):
         self.server.responses.append((200, [1, 2]))
         with self.assertRaises(SnapdError):
-            self.client.list_rules()
+            self.client.list_snaps()
 
     def test_non_dict_error_result(self):
         self.server.responses.append((400, {
             "type": "error", "status-code": 400, "result": "oops",
         }))
         with self.assertRaises(SnapdError) as ctx:
-            self.client.list_rules()
+            self.client.list_snaps()
         self.assertEqual(ctx.exception.message, "snapd error")
 
 
-class ValidationTests(unittest.TestCase):
-    def test_valid(self):
-        self.assertEqual(normalize_pattern("/home/user/docs/**"),
-                         ("/home/user/docs/**", None))
-        pattern, error = normalize_pattern("~/docs/**")
-        self.assertIsNone(error)
-        self.assertTrue(pattern.startswith("/"))
+class ConnectionsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.socket_path = os.path.join(self.tmpdir.name, "snapd.socket")
+        self.server = MockSnapd(self.socket_path)
+        self.client = Client(socket_path=self.socket_path)
+        self.result = {"established": [
+            {"slot": {"snap": "snapd", "slot": "camera"},
+             "plug": {"snap": "firefox", "plug": "camera"},
+             "interface": "camera", "manual": True}],
+            "undesired": [
+                {"slot": {"snap": "snapd", "slot": "removable-media"},
+                 "plug": {"snap": "firefox", "plug": "removable-media"},
+                 "interface": "removable-media", "manual": True}],
+            "plugs": [{"snap": "firefox", "plug": "camera",
+                       "interface": "camera", "apps": [],
+                       "connections": [{"snap": "snapd", "slot": "camera"}]}],
+            "slots": [{"snap": "snapd", "slot": "camera",
+                       "interface": "camera",
+                       "connections": [{"snap": "firefox",
+                                        "plug": "camera"}]}]}
 
-    def test_invalid(self):
-        for bad in ["", "relative/**", "/a\x00b", "/a\nb",
-                    "/a‮/b", "/a/../b"]:
-            self.assertIsNotNone(normalize_pattern(bad)[1], bad)
+    def tearDown(self):
+        self.server.stop()
+        self.tmpdir.cleanup()
 
-    def test_broad_patterns(self):
-        self.assertTrue(is_broad_pattern("/**", home="/home/user"))
-        self.assertTrue(is_broad_pattern("/home/**", home="/home/user"))
-        self.assertTrue(is_broad_pattern("~/**", home="/home/user"))
-        self.assertTrue(is_broad_pattern("~/**", home="/root"))
-        self.assertFalse(is_broad_pattern("/tmp/**", home="/home/user"))
+    def test_list_connections_with_snap(self):
+        self.server.connections["firefox"] = self.result
+        result = self.client.list_connections("firefox")
+        self.assertEqual(result["established"][0]["plug"]["snap"], "firefox")
+        self.assertEqual(result["undesired"][0]["plug"]["plug"],
+                         "removable-media")
+        self.assertTrue(result["established"][0]["manual"])
 
-    def test_broad_pattern_bypasses(self):
-        for pattern in ["/*/**", "/home/*/**", "/**/*", "/home/us*/**",
-                        "/*/user/**", "/h*/**", "/home/u?er/**",
-                        "/ho*/user/**", "/home/user/**/*"]:
-            self.assertTrue(is_broad_pattern(pattern, home="/home/user"),
-                            pattern)
-        self.assertTrue(is_broad_pattern("/home/*/**", home="/root"))
+    def test_list_connections_without_snap(self):
+        self.server.default_connections = self.result
+        result = self.client.list_connections()
+        self.assertEqual(len(result["established"]), 1)
 
-    def test_narrow_pattern(self):
-        self.assertFalse(is_broad_pattern("/home/user/docs/**",
-                                         home="/home/user"))
-        self.assertFalse(is_broad_pattern("/home/*/Documents/**",
-                                         home="/home/user"))
+    def test_snap_name_quoted_in_query(self):
+        self.server.connections["a b&c"] = self.result
+        result = self.client.list_connections("a b&c")
+        self.assertEqual(result["established"][0]["plug"]["snap"], "firefox")
+
+    def test_connections_no_header_sent_on_read(self):
+        self.server.connections["firefox"] = self.result
+        self.client.list_connections("firefox")
+        self.assertEqual(self.server.posts, [])
+
+
+class MutationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.socket_path = os.path.join(self.tmpdir.name, "snapd.socket")
+        self.server = MockSnapd(self.socket_path)
+        self.client = Client(socket_path=self.socket_path)
+
+    def tearDown(self):
+        self.server.stop()
+        self.tmpdir.cleanup()
+
+    def test_change_interface_sends_header_and_body(self):
+        change_id = self.client.change_interface(
+            "connect", "firefox", "camera", "snapd", "camera")
+        self.assertEqual(change_id, "1")
+        path, body, allowed = self.server.posts[0]
+        self.assertEqual(path, "/v2/interfaces")
+        self.assertTrue(allowed)
+        self.assertEqual(body, {
+            "action": "connect",
+            "plugs": [{"snap": "firefox", "plug": "camera"}],
+            "slots": [{"snap": "snapd", "slot": "camera"}]})
+
+    def test_change_interface_403_auth_cancelled(self):
+        self.server.interface_responses.append((403, {
+            "type": "error", "status-code": 403,
+            "result": {"message": "auth cancelled",
+                       "kind": "auth-cancelled"}}))
+        with self.assertRaises(SnapdError) as ctx:
+            self.client.change_interface("disconnect", "firefox", "camera",
+                                         "snapd", "camera")
+        self.assertEqual(ctx.exception.kind, "auth-cancelled")
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_change_interface_snapd_error(self):
+        self.server.interface_responses.append((500, {
+            "type": "error", "status-code": 500,
+            "result": {"message": "snapd exploded",
+                       "kind": "some-kind"}}))
+        with self.assertRaises(SnapdError) as ctx:
+            self.client.change_interface("connect", "firefox", "camera",
+                                         "snapd", "camera")
+        self.assertEqual(ctx.exception.status_code, 500)
+        self.assertEqual(ctx.exception.message, "snapd exploded")
+
+
+class ChangeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.socket_path = os.path.join(self.tmpdir.name, "snapd.socket")
+        self.server = MockSnapd(self.socket_path)
+        self.client = Client(socket_path=self.socket_path)
+
+    def tearDown(self):
+        self.server.stop()
+        self.tmpdir.cleanup()
+
+    def start_change(self):
+        return self.client.change_interface(
+            "connect", "firefox", "camera", "snapd", "camera")
+
+    def test_get_change_done(self):
+        change_id = self.start_change()
+        self.server.change_script[change_id] = [
+            {"status": "Done", "ready": True, "err": None,
+             "summary": "done"}]
+        change = self.client.get_change(change_id)
+        self.assertEqual(change["status"], "Done")
+        self.assertTrue(change["ready"])
+
+    def test_get_change_error_with_err(self):
+        change_id = self.start_change()
+        self.server.change_script[change_id] = [
+            {"status": "Error", "ready": True, "err": "cannot connect",
+             "summary": "failed"}]
+        change = self.client.get_change(change_id)
+        self.assertEqual(change["err"], "cannot connect")
+
+    def test_get_change_not_found(self):
+        with self.assertRaises(SnapdError) as ctx:
+            self.client.get_change("999")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_change_endpoint_without_s_404(self):
+        self.server.responses.append((404, {
+            "type": "error", "status-code": 404,
+            "result": {"message": "not found", "kind": "not-found"}}))
+        with self.assertRaises(SnapdError) as ctx:
+            self.client.get_change("1")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_wait_for_change_polls_to_done(self):
+        change_id = self.start_change()
+        sleeps = []
+        change = self.client.wait_for_change(
+            change_id, sleep=sleeps.append,
+            monotonic=FakeClock().monotonic)
+        self.assertEqual(change["status"], "Done")
+        self.assertEqual(sleeps, [0.5])
+
+    def test_wait_for_change_error(self):
+        change_id = self.start_change()
+        self.server.change_script[change_id] = [
+            {"status": "Error", "ready": True, "err": "cannot connect",
+             "summary": "failed"}]
+        with self.assertRaises(SnapdError) as ctx:
+            self.client.wait_for_change(change_id, sleep=lambda s: None,
+                                        monotonic=FakeClock().monotonic)
+        self.assertEqual(ctx.exception.kind, "change-error")
+        self.assertIn("cannot connect", ctx.exception.message)
+
+    def test_wait_for_change_timeout(self):
+        change_id = self.start_change()
+        self.server.change_script[change_id] = [
+            {"status": "Doing", "ready": False, "err": None}]
+        sleeps = []
+        with self.assertRaises(SnapdError) as ctx:
+            self.client.wait_for_change(change_id, timeout=10,
+                                        sleep=sleeps.append,
+                                        monotonic=FakeClock(step=5).monotonic)
+        self.assertEqual(ctx.exception.kind, "change-timeout")
+        self.assertEqual(sleeps, [0.5])
+
+
+class FakeClock:
+    def __init__(self, step=0.5):
+        self.now = 1000.0
+        self.step = step
+
+    def monotonic(self):
+        self.now += self.step
+        return self.now
 
 
 if __name__ == "__main__":
