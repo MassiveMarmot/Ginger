@@ -41,7 +41,6 @@ class Client:
     def __init__(self, socket_path=None):
         self.socket_path = socket_path or os.environ.get("SNAPD_SOCKET",
                                                          DEFAULT_SOCKET)
-        self.last_response = None
 
     def _request(self, method, path, body=None, allow_interaction=False):
         data = json.dumps(body).encode() if body is not None else None
@@ -71,18 +70,20 @@ class Client:
                 result = {}
             raise SnapdError(result.get("message", "snapd error"),
                              kind=result.get("kind"), status_code=resp.status)
-        self.last_response = payload
-        return payload.get("result")
+        return payload
 
     def list_snaps(self):
-        return self._request("GET", "/v2/snaps")
+        result = self._request("GET", "/v2/snaps")
+        if not isinstance(result.get("result"), list):
+            raise SnapdError("unexpected snaps response")
+        return result["result"]
 
     def list_connections(self, snap=None, select="all"):
         query = {"select": select}
         if snap is not None:
             query["snap"] = snap
         path = "/v2/connections?" + urllib.parse.urlencode(query)
-        result = self._request("GET", path)
+        result = self._request("GET", path).get("result")
         if not isinstance(result, dict):
             raise SnapdError("unexpected connections response")
         return result
@@ -91,17 +92,16 @@ class Client:
         body = {"action": action,
                 "plugs": [{"snap": plug_snap, "plug": plug}],
                 "slots": [{"snap": slot_snap, "slot": slot}]}
-        result = self._request("POST", "/v2/interfaces", body,
+        payload = self._request("POST", "/v2/interfaces", body,
                                allow_interaction=True)
-        if not isinstance(result, dict):
-            result = self.last_response
-        if not isinstance(result, dict):
-            raise SnapdError("unexpected change response")
-        return result
+        change = payload.get("change")
+        if not change:
+            raise SnapdError("snapd did not return a change id")
+        return str(change)
 
     def get_change(self, change_id):
         path = "/v2/changes/" + urllib.parse.quote(str(change_id), safe="")
-        result = self._request("GET", path)
+        result = self._request("GET", path).get("result")
         if not isinstance(result, dict):
             raise SnapdError("unexpected change response")
         return result

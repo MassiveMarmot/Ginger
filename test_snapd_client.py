@@ -99,8 +99,9 @@ class MockSnapd:
                      {"status": "Done", "ready": True, "err": None,
                       "summary": "done"}])
                 status, payload = 202, {
-                    "type": "async", "status-code": 202,
-                    "result": {"status-code": 202, "change": change_id}}
+                    "type": "async", "status": "Accepted",
+                    "status-code": 202, "result": None,
+                    "change": change_id}
         elif method == "GET" and path.startswith("/v2/changes/"):
             change_id = urllib.parse.unquote(
                 path[len("/v2/changes/"):].split("?")[0])
@@ -254,9 +255,9 @@ class MutationTests(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def test_change_interface_sends_header_and_body(self):
-        result = self.client.change_interface(
+        change_id = self.client.change_interface(
             "connect", "firefox", "camera", "snapd", "camera")
-        self.assertEqual(result["change"], "1")
+        self.assertEqual(change_id, "1")
         path, body, allowed = self.server.posts[0]
         self.assertEqual(path, "/v2/interfaces")
         self.assertTrue(allowed)
@@ -300,9 +301,8 @@ class ChangeTests(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def start_change(self):
-        result = self.client.change_interface(
+        return self.client.change_interface(
             "connect", "firefox", "camera", "snapd", "camera")
-        return result["change"]
 
     def test_get_change_done(self):
         change_id = self.start_change()

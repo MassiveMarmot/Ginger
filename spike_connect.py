@@ -60,16 +60,14 @@ def main():
     print("POST /v2/interfaces (X-Allow-Interaction: true)")
     print(json.dumps(body, sort_keys=True))
     try:
-        result = client.change_interface(action, args.snap, args.plug,
-                                         args.slot_snap, args.slot)
+        change_id = client.change_interface(action, args.snap, args.plug,
+                                            args.slot_snap, args.slot)
     except SnapdError as e:
         show("HTTP status", e.status_code)
         show("kind", e.kind)
         show("message", e.message)
         return 1
-    show("raw response", client.last_response)
-    show("change id", result.get("change"))
-    change_id = result.get("change")
+    show("change id", change_id)
     if change_id:
         try:
             change = client.wait_for_change(change_id)
