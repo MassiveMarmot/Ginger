@@ -92,6 +92,9 @@ class UISmokeTests(unittest.TestCase):
         self.server.snaps = []
         self.server.posts = []
         self.server.responses = []
+        self.server.interface_responses = []
+        self.server.change_script = {}
+        self.server.delay = 0
         self.server.default_connections = {
             "established": [], "undesired": [], "plugs": [], "slots": []}
         self.prev_data_dir = os.environ.get("GINGER_DATA_DIR")
@@ -502,7 +505,8 @@ class UISmokeTests(unittest.TestCase):
         self.assertEqual(len(self.row_texts(win)), 1)
         path = os.path.join(os.environ["GINGER_DATA_DIR"],
                             "baseline.json")
-        self.assertEqual(open(path).read(), "not-json{")
+        with open(path) as f:
+            self.assertEqual(f.read(), "not-json{")
 
     @unittest.skipIf(os.geteuid() == 0, "chmod is ineffective as root")
     def test_baseline_save_failure_shows_banner(self):
