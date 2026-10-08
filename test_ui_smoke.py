@@ -620,19 +620,26 @@ class UISmokeTests(unittest.TestCase):
         raise AssertionError("no switch inside row")
 
     def confirm_alert(self, heading_part, response, timeout_ms=3000):
+        alert = self.wait_alert(heading_part, timeout_ms)
+        if alert is not None:
+            alert.emit("response", response)
+        return alert
+
+    def wait_alert(self, heading_part, timeout_ms=3000):
         ctx = GLib.MainContext.default()
         end = GLib.get_monotonic_time() + timeout_ms * 1000
-        while GLib.get_monotonic_time() < end:
-            found = [d for w in Gtk.Window.list_toplevels()
+        alert = []
+        while not alert and GLib.get_monotonic_time() < end:
+            alert = [d for w in Gtk.Window.list_toplevels()
                      for d in self.walk(w)
                      if isinstance(d, Adw.AlertDialog)
                      and heading_part in d.get_heading()]
-            if found:
-                found[0].emit("response", response)
-                return found[0]
-            if not ctx.iteration(False):
+            self.assertEqual(len(alert), 1,
+                            "expected exactly one %s alert" % heading_part)
+            if not alert and not ctx.iteration(False):
                 time.sleep(0.01)
-        return None
+        self.assertTrue(alert, "no %s alert appeared" % heading_part)
+        return alert[0] if alert else None
 
     def test_header_sent_and_202_to_done(self):
         win = self.load_win()
@@ -711,19 +718,9 @@ class UISmokeTests(unittest.TestCase):
         row = self.switch_row(win, "removable-media")
         self.assertFalse(row.get_active())
         self.toggle_switch(row)
-        ctx = GLib.MainContext.default()
-        end = GLib.get_monotonic_time() + 3000 * 1000
-        alert = []
-        while not alert and GLib.get_monotonic_time() < end:
-            alert = [d for w in Gtk.Window.list_toplevels()
-                     for d in self.walk(w)
-                     if isinstance(d, Adw.AlertDialog)
-                     and "Connect" in d.get_heading()]
-            if not alert and not ctx.iteration(False):
-                time.sleep(0.01)
-        self.assertTrue(alert)
-        self.assertIn("/media", alert[0].get_body())
-        alert[0].emit("response", "confirm")
+        alert = self.wait_alert("Connect")
+        self.assertIn("/media", alert.get_body())
+        alert.emit("response", "confirm")
         self.run_until(lambda: self.server.posts)
         path, body, allowed = self.server.posts[0]
         self.assertEqual(body["action"], "connect")
@@ -737,22 +734,12 @@ class UISmokeTests(unittest.TestCase):
         win = self.load_win()
         row = self.switch_row(win, "camera")
         self.toggle_switch(row)
-        ctx = GLib.MainContext.default()
-        end = GLib.get_monotonic_time() + 3000 * 1000
-        alert = []
-        while not alert and GLib.get_monotonic_time() < end:
-            alert = [d for w in Gtk.Window.list_toplevels()
-                     for d in self.walk(w)
-                     if isinstance(d, Adw.AlertDialog)
-                     and "Disconnect" in d.get_heading()]
-            if not alert and not ctx.iteration(False):
-                time.sleep(0.01)
-        self.assertTrue(alert)
-        self.assertEqual(alert[0].get_body(),
+        alert = self.wait_alert("Disconnect")
+        self.assertEqual(alert.get_body(),
                          changes.confirmation_body(
                              "disconnect", "camera", "camera", 1))
         self.assertEqual(self.server.posts, [])
-        alert[0].emit("response", "cancel")
+        alert.emit("response", "cancel")
         self.run_until(lambda: self.switch_row(win, "camera") is not None)
         row = self.switch_row(win, "camera")
         self.assertTrue(row.get_active())

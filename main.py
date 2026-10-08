@@ -48,6 +48,7 @@ class Window(Adw.ApplicationWindow):
         self.baselines = {}
         self.baseline_problem = None
         self.busy = False
+        self.confirming = False
         self.suppress_switch_handler = False
         self.last_toast = None
 
@@ -450,7 +451,7 @@ class Window(Adw.ApplicationWindow):
         if self.suppress_switch_handler:
             return
         plug = row.plug_info
-        if self.busy:
+        if self.busy or self.confirming:
             self.set_switch_active(row, plug["connected"])
             return
         snap_name = row.plug_snap
@@ -466,7 +467,11 @@ class Window(Adw.ApplicationWindow):
             self.start_change(row, snap_name, plug, action)
 
     def confirm_change(self, row, snap_name, plug, action):
+        if self.confirming:
+            self.set_switch_active(row, plug["connected"])
+            return
         self.set_switch_active(row, not row.get_active())
+        self.confirming = True
         body = changes.confirmation_body(action, plug["name"],
                                          plug["interface"], plug["tier"])
         if action == "connect":
@@ -485,6 +490,7 @@ class Window(Adw.ApplicationWindow):
                      (row, snap_name, plug, action))
 
     def on_change_confirmed(self, source, result, data):
+        self.confirming = False
         row, snap_name, plug, action = data
         if source.choose_finish(result) != "confirm":
             return
