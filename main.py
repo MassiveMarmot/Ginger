@@ -449,10 +449,10 @@ class Window(Adw.ApplicationWindow):
     def on_switch_toggled(self, row, pspec):
         if self.suppress_switch_handler:
             return
-        if self.busy:
-            self.set_switch_active(row, not row.get_active())
-            return
         plug = row.plug_info
+        if self.busy:
+            self.set_switch_active(row, plug["connected"])
+            return
         snap_name = row.plug_snap
         if snap_name not in self.baselines or self.baseline_problem \
                 or row.plug_slot is None:
