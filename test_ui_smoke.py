@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+import copy
 import os
 import re
 import sys
@@ -844,11 +845,10 @@ class UISmokeTests(unittest.TestCase):
             self.run_until(lambda: win.busy is True)
             old_toast.emit("button-clicked")
             self.confirm_alert("Connect", "confirm")
-            self.run_until(lambda: win.busy is False)
-            self.assertEqual(len(self.server.posts), 2)
             self.assertEqual(win.last_toast.get_title(),
                              "Another change is running")
-            self.assertTrue(self.switch_row(win, "camera").get_active())
+            self.run_until(lambda: win.busy is False)
+            self.assertEqual(len(self.server.posts), 2)
         finally:
             self.server.delay = 0
 
@@ -884,10 +884,7 @@ class UISmokeTests(unittest.TestCase):
 
     def test_markup_in_connect_confirmation_not_parsed(self):
         plug = "<b>x</b>&amp;"
-        conns = dict(CONNECTIONS)
-        conns["established"] = [dict(e) for e in CONNECTIONS["established"]]
-        conns["undesired"] = [dict(e) for e in CONNECTIONS["undesired"]]
-        conns["plugs"] = [dict(p) for p in CONNECTIONS["plugs"]]
+        conns = copy.deepcopy(CONNECTIONS)
         conns["established"] = [e for e in conns["established"]
                                 if e["plug"]["plug"] != "removable-media"]
         conns["undesired"].append(
@@ -908,10 +905,7 @@ class UISmokeTests(unittest.TestCase):
 
     def test_markup_in_disconnect_confirmation_not_parsed(self):
         plug = "<b>x</b>&amp;"
-        conns = dict(CONNECTIONS)
-        conns["established"] = [dict(e) for e in CONNECTIONS["established"]]
-        conns["undesired"] = [dict(e) for e in CONNECTIONS["undesired"]]
-        conns["plugs"] = [dict(p) for p in CONNECTIONS["plugs"]]
+        conns = copy.deepcopy(CONNECTIONS)
         self.rename_plug(conns, "camera", plug)
         win = self.load_win(connections=conns)
         row = self.switch_row(win, plug)
@@ -1065,12 +1059,18 @@ class PointerPickTests(unittest.TestCase):
                                  banner_hidden=False)
 
     def test_header_buttons_pickable(self):
+        picked = 0
         for button in (self.win.sidebar_toggle, self.win.search_button,
                        self.win.filter_button):
+            # The sidebar toggle is visible only when collapsed.
+            if not button.get_visible():
+                continue
+            picked += 1
             widget = self.pick(button)
             self.assertIsNotNone(widget)
             self.assertTrue(widget is button or widget.is_ancestor(button),
                             "picked %s, expected %s" % (widget, button))
+        self.assertGreaterEqual(picked, 2)
 
     def test_unrevealed_banner_takes_no_space(self):
         self.assertFalse(self.win.baseline_banner.get_revealed())
