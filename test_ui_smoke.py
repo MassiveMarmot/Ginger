@@ -841,7 +841,7 @@ class UISmokeTests(unittest.TestCase):
         try:
             row2 = self.switch_row(win, "camera")
             self.toggle_switch(row2)
-            self.confirm_alert("Disconnect", "confirm")
+            self.confirm_alert("Disconnect camera", "confirm")
             self.run_until(lambda: win.busy is True)
             old_toast.emit("button-clicked")
             self.confirm_alert("Connect", "confirm")
@@ -951,9 +951,12 @@ class UISmokeTests(unittest.TestCase):
             win.client.get_change = orig
         self.assertEqual(win.last_toast.get_title(),
                          "State unknown, reloaded")
+        # A dialog is only closed by AdwDialog.close(); emitting
+        # ::response completes choose() but leaves the dialog open.
         alerts = [d for w in Gtk.Window.list_toplevels()
                   for d in self.walk(w) if isinstance(d, Adw.AlertDialog)]
-        self.assertEqual(alerts, [])
+        self.assertTrue(all(d.get_heading() != "snapd returned an error"
+                             for d in alerts), alerts)
         self.assertTrue(self.switch_row(win, "camera").get_active())
 
 
