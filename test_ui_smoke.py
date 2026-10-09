@@ -785,7 +785,10 @@ class UISmokeTests(unittest.TestCase):
         toast = win.last_toast
         self.assertIsNotNone(toast)
         self.assertIn("Disconnected camera", toast.get_title())
-        toast.emit("clicked")
+        if hasattr(toast, "add_button"):
+            toast.emit("clicked", "undo")
+        else:
+            toast.emit("button-clicked")
         self.run_until(lambda: len(self.server.posts) >= 2)
         path, body, allowed = self.server.posts[1]
         self.assertEqual(body["action"], "connect")
