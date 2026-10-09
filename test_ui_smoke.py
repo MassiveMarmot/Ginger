@@ -509,9 +509,10 @@ class UISmokeTests(unittest.TestCase):
         self.server.snaps = [dict(SNAP_APP)]
         self.server.default_connections = CONNECTIONS
         os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
-        with open(os.path.join(os.environ["GINGER_DATA_DIR"],
-                               "baseline.json"), "w") as f:
-            f.write("not-json{")
+        for name in ("baseline.json", "baseline.json.bak"):
+            with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                                   name), "w") as f:
+                f.write("not-json{")
         win = self.make_window()
         self.assertTrue(win.baseline_banner.get_revealed())
         self.assertEqual(win.page_stack.get_visible_child_name(), "snaps")
@@ -536,31 +537,74 @@ class UISmokeTests(unittest.TestCase):
         finally:
             os.chmod(data_dir, 0o700)
 
-    def test_forget_menu_item_clears_banner(self):
+    def test_new_saved_state_keeps_unreadable_files(self):
         self.server.snaps = [dict(SNAP_APP)]
         self.server.default_connections = CONNECTIONS
         os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
+        for name in ("baseline.json", "baseline.json.bak"):
+            with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                                   name), "w") as f:
+                f.write("not-json{")
         with open(os.path.join(os.environ["GINGER_DATA_DIR"],
-                               "baseline.json"), "w") as f:
-            f.write("not-json{")
+                               "baseline.json.bak"), "w") as f:
+            f.write("also not json")
         win = self.make_window()
         self.assertTrue(win.baseline_banner.get_revealed())
-        win.activate_action("win.forget-baseline", None)
-        ctx = GLib.MainContext.default()
-        for _ in range(10):
-            ctx.iteration(False)
-        alert = [d for w in Gtk.Window.list_toplevels()
-                 for d in self.walk(w)
-                 if isinstance(d, Adw.AlertDialog)]
-        self.assertTrue(alert)
-        alert[0].emit("response", "forget")
+        self.assertIn("cannot be read", win.baseline_banner.get_title())
+        self.assertIn(os.environ["GINGER_DATA_DIR"],
+                      win.baseline_banner.get_title())
+        self.assert_switches_live(win, False)
+        win.baseline_banner.emit("button-clicked")
+        alert = self.wait_alert("Start a new saved state")
+        self.assertIn("no longer be the state from before Ginger",
+                      alert.get_body())
+        alert.emit("response", "restart")
         self.run_until(lambda: not win.baseline_banner.get_revealed())
+        files = sorted(os.listdir(os.environ["GINGER_DATA_DIR"]))
+        self.assertEqual(len(files), 3, files)
+        self.assertTrue(all(
+            "baseline.unreadable-" in f for f in files
+            if not f.startswith("baseline.json")), files)
         import baseline
+        loaded, used_backup = baseline.load()
+        self.assertFalse(used_backup)
+        self.assertIn("firefox", loaded)
+        self.assert_switches_live(win, True)
+
+    def test_cancel_new_saved_state_keeps_files_blocked(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
+        for name in ("baseline.json", "baseline.json.bak"):
+            with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                                   name), "w") as f:
+                f.write("not-json{")
+        win = self.make_window()
+        self.assertTrue(win.baseline_banner.get_revealed())
+        win.baseline_banner.emit("button-clicked")
+        alert = self.wait_alert("Start a new saved state")
+        alert.emit("response", "cancel")
+        self.run_until(lambda: self.win.baseline_banner.get_revealed())
+        with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                               "baseline.json")) as f:
+            self.assertEqual(f.read(), "not-json{")
+        self.assert_switches_live(self.win, False)
+
+    def test_backup_used_when_main_corrupt(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        win = self.make_window()
         path = os.path.join(os.environ["GINGER_DATA_DIR"], "baseline.json")
-        self.assertEqual(
-            [c["plug"] for c in baseline.load(path)["firefox"]["connected"]],
-            ["camera", "network", "removable-media"])
-        self.assertEqual(len(self.row_texts(win)), 1)
+        with open(path) as f:
+            good = f.read()
+        self.assertFalse(win.baseline_banner.get_revealed())
+        with open(path, "w") as f:
+            f.write("not-json{")
+        win.load()
+        self.assertFalse(win.baseline_banner.get_revealed())
+        self.assertIn("backup copy of the saved original state",
+                      win.last_toast.get_title())
+        self.assert_switches_live(win, True)
 
     def test_banner_hidden_when_baseline_ok(self):
         self.server.snaps = [dict(SNAP_APP)]
@@ -604,9 +648,10 @@ class UISmokeTests(unittest.TestCase):
         # A corrupt baseline keeps the gate closed: no change may be sent
         # while the saved original state is unreadable.
         os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
-        with open(os.path.join(os.environ["GINGER_DATA_DIR"],
-                               "baseline.json"), "w") as f:
-            f.write("not-json{")
+        for name in ("baseline.json", "baseline.json.bak"):
+            with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                                   name), "w") as f:
+                f.write("not-json{")
         win = self.load_win()
         self.assertTrue(win.baseline_banner.get_revealed())
         self.assert_switches_live(win, False)
@@ -853,7 +898,7 @@ class UISmokeTests(unittest.TestCase):
             self.server.delay = 0
 
     def test_undo_without_baseline_shows_toast_no_post(self):
-        # The baseline gate lives in start_change: forgetting the
+        # The baseline gate lives in start_change: losing the
         # baseline while an undo toast is open blocks the undo.
         win = self.load_win()
         row = self.switch_row(win, "camera")
@@ -863,9 +908,10 @@ class UISmokeTests(unittest.TestCase):
         toast = win.last_toast
         self.assertIn("Disconnected camera", toast.get_title())
         self.assertEqual(len(self.server.posts), 1)
-        with open(os.path.join(os.environ["GINGER_DATA_DIR"],
-                               "baseline.json"), "w") as f:
-            f.write("not-json{")
+        for name in ("baseline.json", "baseline.json.bak"):
+            with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                                   name), "w") as f:
+                f.write("not-json{")
         win.load()
         self.assertTrue(win.baseline_banner.get_revealed())
         toast.emit("button-clicked")
