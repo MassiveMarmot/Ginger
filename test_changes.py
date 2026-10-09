@@ -55,6 +55,17 @@ class ConfirmationTests(unittest.TestCase):
                                          "removable-media", 2)
         self.assertIn("<b>evil</b>&amp;", body)
 
+    def test_connect_body_has_no_tier3_line(self):
+        self.assertNotIn("Ginger never connects",
+                         changes.confirmation_body(
+                             "connect", "docker-support",
+                             "docker-support", 3))
+
+    def test_disconnected_markup_in_plug_name_stays_plain(self):
+        body = changes.confirmation_body("disconnect", "<b>evil</b>&amp;",
+                                         "removable-media", 2)
+        self.assertIn("<b>evil</b>&amp;", body)
+
 
 class RunChangeTests(unittest.TestCase):
     def setUp(self):
@@ -109,6 +120,43 @@ class RunChangeTests(unittest.TestCase):
             self.client, "connect", "firefox", "camera", "snapd", "camera")
         self.assertEqual(outcome, changes.OUTCOME_ERROR)
         self.assertIn("access denied", message)
+
+    def flaky_get_change(self, kind):
+        orig = self.client.get_change
+        calls = []
+
+        def flaky(cid):
+            calls.append(cid)
+            if len(calls) > 1:
+                raise SnapdError("transient", kind=kind)
+            return {"status": "Doing", "ready": False, "err": None}
+        self.client.get_change = flaky
+        self.addCleanup(setattr, self.client, "get_change", orig)
+
+    def test_poll_transient_error_is_timeout(self):
+        # A read timeout while polling a change does not mean the change
+        # failed; treat it like the timeout.
+        self.flaky_get_change("request-timeout")
+        outcome, message = changes.run_change(
+            self.client, "connect", "firefox", "camera", "snapd", "camera")
+        self.assertEqual(outcome, changes.OUTCOME_TIMEOUT)
+        self.assertIsNone(message)
+
+    def test_poll_connection_failure_is_timeout(self):
+        self.flaky_get_change("connection-failed")
+        outcome, message = changes.run_change(
+            self.client, "connect", "firefox", "camera", "snapd", "camera")
+        self.assertEqual(outcome, changes.OUTCOME_TIMEOUT)
+        self.assertIsNone(message)
+
+    def test_change_error_still_is_error(self):
+        self.server.change_script["1"] = [
+            {"status": "Error", "ready": True, "err": "cannot connect",
+             "summary": "failed"}]
+        outcome, message = changes.run_change(
+            self.client, "connect", "firefox", "camera", "snapd", "camera")
+        self.assertEqual(outcome, changes.OUTCOME_ERROR)
+        self.assertIn("cannot connect", message)
 
     def test_request_timeout(self):
         self.server.delay = 5

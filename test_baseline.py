@@ -141,6 +141,8 @@ class BaselineTests(unittest.TestCase):
         baseline.save_snaps({"<b>evil</b>&amp;": entry})
         self.assertEqual(baseline.load()["<b>evil</b>&amp;"], entry)
 
+    @unittest.skipIf(os.geteuid() == 0,
+                     "chmod is ineffective as root")
     def test_save_failure_raises_oserror(self):
         os.environ["GINGER_DATA_DIR"] = os.path.join(
             self.tmpdir.name, "not-writable", "deeper")
