@@ -47,6 +47,11 @@ flatpak override --user --nofilesystem=/run/snapd.socket io.github.massivemarmot
 - No network access, no telemetry, no analytics.
 - Nothing is logged; no files are written outside the app's own data dir.
 
+## Review checklist
+
+- Every overlay child has an explicit alignment.
+- UI tests include at least one pointer-pick check.
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).

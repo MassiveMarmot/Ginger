@@ -820,6 +820,144 @@ class UISmokeTests(unittest.TestCase):
                          {"snap": "slot-provider", "slot": "camera"})
 
 
+    def test_undo_while_busy_shows_toast_single_post(self):
+        # Undo on an old toast while a slow change runs: start_change
+        # refuses the second change and shows a toast, exactly one POST.
+        win = self.load_win()
+        row = self.switch_row(win, "removable-media")
+        self.toggle_switch(row)
+        self.confirm_alert("Disconnect", "confirm")
+        self.wait_change_finished(win)
+        old_toast = win.last_toast
+        self.assertIn("Disconnected removable-media", old_toast.get_title())
+        self.assertEqual(len(self.server.posts), 1)
+        self.server.delay = 0.5
+        try:
+            row2 = self.switch_row(win, "camera")
+            self.toggle_switch(row2)
+            self.confirm_alert("Disconnect", "confirm")
+            self.run_until(lambda: win.busy is True)
+            old_toast.emit("button-clicked")
+            self.confirm_alert("Connect", "confirm")
+            self.run_until(lambda: win.busy is False)
+            self.assertEqual(len(self.server.posts), 2)
+            self.assertEqual(win.last_toast.get_title(),
+                             "Another change is running")
+            self.assertTrue(self.switch_row(win, "camera").get_active())
+        finally:
+            self.server.delay = 0
+
+    def test_undo_without_baseline_shows_toast_no_post(self):
+        # The baseline gate lives in start_change: forgetting the
+        # baseline while an undo toast is open blocks the undo.
+        win = self.load_win()
+        row = self.switch_row(win, "camera")
+        self.toggle_switch(row)
+        self.confirm_alert("Disconnect", "confirm")
+        self.wait_change_finished(win)
+        toast = win.last_toast
+        self.assertIn("Disconnected camera", toast.get_title())
+        self.assertEqual(len(self.server.posts), 1)
+        with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                               "baseline.json"), "w") as f:
+            f.write("not-json{")
+        win.load()
+        self.assertTrue(win.baseline_banner.get_revealed())
+        toast.emit("button-clicked")
+        self.run_until(lambda: win.last_toast is not toast)
+        self.assertEqual(len(self.server.posts), 1)
+        self.assertIn("original state", win.last_toast.get_title())
+
+    def rename_plug(self, conns, plug, rename):
+        for p in conns["plugs"]:
+            if p["plug"] == plug:
+                p["plug"] = rename
+        for e in conns["established"]:
+            if e["plug"]["plug"] == plug:
+                e["plug"]["plug"] = rename
+        return conns
+
+    def test_markup_in_connect_confirmation_not_parsed(self):
+        plug = "<b>x</b>&amp;"
+        conns = dict(CONNECTIONS)
+        conns["established"] = [dict(e) for e in CONNECTIONS["established"]]
+        conns["undesired"] = [dict(e) for e in CONNECTIONS["undesired"]]
+        conns["plugs"] = [dict(p) for p in CONNECTIONS["plugs"]]
+        conns["established"] = [e for e in conns["established"]
+                                if e["plug"]["plug"] != "removable-media"]
+        conns["undesired"].append(
+            {"slot": {"snap": "snapd", "slot": "removable-media"},
+             "plug": {"snap": "firefox", "plug": plug},
+             "interface": "removable-media", "manual": True})
+        self.rename_plug(conns, "removable-media", plug)
+        win = self.load_win(connections=conns)
+        row = self.switch_row(win, plug)
+        self.assertFalse(row.get_active())
+        self.toggle_switch(row)
+        alert = self.wait_alert("Connect")
+        self.assertIn(plug, alert.get_heading())
+        self.assertFalse(alert.get_heading_use_markup())
+        self.assertIn(plug, alert.get_body())
+        self.assertFalse(alert.get_body_use_markup())
+        alert.emit("response", "cancel")
+
+    def test_markup_in_disconnect_confirmation_not_parsed(self):
+        plug = "<b>x</b>&amp;"
+        conns = dict(CONNECTIONS)
+        conns["established"] = [dict(e) for e in CONNECTIONS["established"]]
+        conns["undesired"] = [dict(e) for e in CONNECTIONS["undesired"]]
+        conns["plugs"] = [dict(p) for p in CONNECTIONS["plugs"]]
+        self.rename_plug(conns, "camera", plug)
+        win = self.load_win(connections=conns)
+        row = self.switch_row(win, plug)
+        self.assertTrue(row.get_active())
+        self.toggle_switch(row)
+        alert = self.wait_alert("Disconnect")
+        self.assertIn(plug, alert.get_heading())
+        self.assertFalse(alert.get_heading_use_markup())
+        self.assertIn(plug, alert.get_body())
+        self.assertFalse(alert.get_body_use_markup())
+        alert.emit("response", "cancel")
+
+    def test_change_done_while_closing_does_nothing(self):
+        win = self.load_win()
+        win.on_close_request()
+        self.assertTrue(win.closing)
+        self.assertIsNone(win.last_toast)
+        win.change_done("disconnect", "firefox", "camera",
+                        ("snapd", "camera"), changes.OUTCOME_DONE, None)
+        self.assertIsNone(win.last_toast)
+        self.assertEqual(self.server.posts, [])
+
+    def test_transient_poll_error_shows_state_unknown(self):
+        # A transient error while polling (for example a read timeout)
+        # reloads and shows the unknown-state toast, not an error dialog.
+        win = self.load_win()
+        orig = win.client.get_change
+        calls = []
+
+        def flaky(cid):
+            calls.append(cid)
+            if len(calls) > 1:
+                raise snapd_client.SnapdError("transient",
+                                              kind="request-timeout")
+            return {"status": "Doing", "ready": False, "err": None}
+        win.client.get_change = flaky
+        try:
+            row = self.switch_row(win, "camera")
+            self.toggle_switch(row)
+            self.confirm_alert("Disconnect", "confirm")
+            self.wait_change_finished(win)
+        finally:
+            win.client.get_change = orig
+        self.assertEqual(win.last_toast.get_title(),
+                         "State unknown, reloaded")
+        alerts = [d for w in Gtk.Window.list_toplevels()
+                  for d in self.walk(w) if isinstance(d, Adw.AlertDialog)]
+        self.assertEqual(alerts, [])
+        self.assertTrue(self.switch_row(win, "camera").get_active())
+
+
 class PointerPickTests(unittest.TestCase):
     """win.pick exercises pointer picking; emitting signals does not.
 
@@ -886,7 +1024,11 @@ class PointerPickTests(unittest.TestCase):
         point.x = target.get_width() / 2
         point.y = min(target.get_height() / 2, 5)
         out = Graphene.Point()
-        ok = target.compute_point(self.win, point, out)
+        result = target.compute_point(self.win, point, out)
+        if isinstance(result, tuple):
+            ok, out = result
+        else:
+            ok = result
         self.assertTrue(ok, "compute_point failed")
         return out.x, out.y
 
