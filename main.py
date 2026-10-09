@@ -49,6 +49,7 @@ class Window(Adw.ApplicationWindow):
         self.baseline_problem = None
         self.busy = False
         self.confirming = False
+        self.closing = False
         self.suppress_switch_handler = False
         self.last_toast = None
 
@@ -112,8 +113,13 @@ class Window(Adw.ApplicationWindow):
         self.set_content(self.main_split)
 
         self.setup_breakpoints()
+        self.connect("close-request", self.on_close_request)
         self.on_page_selected(self.sidebar_rows,
                               self.sidebar_rows.get_row_at_index(0))
+
+    def on_close_request(self, *args):
+        self.closing = True
+        return False
 
     def page_with_header(self, page):
         header = Adw.HeaderBar()
@@ -451,14 +457,6 @@ class Window(Adw.ApplicationWindow):
         if self.suppress_switch_handler:
             return
         plug = row.plug_info
-        if self.busy or self.confirming:
-            self.set_switch_active(row, plug["connected"])
-            return
-        snap_name = row.plug_snap
-        if snap_name not in self.baselines or self.baseline_problem \
-                or row.plug_slot is None:
-            self.set_switch_active(row, plug["connected"])
-            return
         action = "connect" if row.get_active() else "disconnect"
         if changes.needs_confirmation(action, plug["interface"],
                                       plug["tier"]):
@@ -497,6 +495,17 @@ class Window(Adw.ApplicationWindow):
         self.start_change(row, snap_name, plug, action)
 
     def start_change(self, row, snap_name, plug, action):
+        if self.closing:
+            return
+        if self.busy or self.confirming:
+            self.set_switch_active(row, plug["connected"])
+            self.show_toast("Another change is running")
+            return
+        if snap_name not in self.baselines or self.baseline_problem \
+                or row.plug_slot is None:
+            self.set_switch_active(row, plug["connected"])
+            self.show_toast("No saved original state for this snap yet")
+            return
         self.busy = True
         self.set_switch_active(row, action == "connect")
         row.set_sensitive(False)
@@ -516,6 +525,8 @@ class Window(Adw.ApplicationWindow):
                       slot, outcome, message)
 
     def change_done(self, action, snap_name, plug, slot, outcome, message):
+        if self.closing:
+            return False
         self.busy = False
         self.load()
         if outcome == changes.OUTCOME_DONE:
@@ -523,9 +534,7 @@ class Window(Adw.ApplicationWindow):
         elif outcome == changes.OUTCOME_CANCELLED:
             pass
         elif outcome == changes.OUTCOME_TIMEOUT:
-            toast = self.make_toast("State unknown, reloaded")
-            self.last_toast = toast
-            self.toast_overlay.add_toast(toast)
+            self.show_toast("State unknown, reloaded")
         else:
             alert = Adw.AlertDialog(heading="snapd returned an error",
                                     body=message or "")
@@ -541,15 +550,19 @@ class Window(Adw.ApplicationWindow):
             toast.set_title(GLib.markup_escape_text(title))
         return toast
 
+    def show_toast(self, title):
+        toast = self.make_toast(title)
+        self.last_toast = toast
+        self.toast_overlay.add_toast(toast)
+        return toast
+
     def show_undo_toast(self, action, snap_name, plug, slot):
         inverse = "disconnect" if action == "connect" else "connect"
         verb = "Connected" if action == "connect" else "Disconnected"
-        toast = self.make_toast("%s %s" % (verb, plug))
+        toast = self.show_toast("%s %s" % (verb, plug))
         toast.set_button_label("Undo")
         toast.connect("button-clicked", lambda t: self.undo_action(
             t, snap_name, plug, inverse, slot))
-        self.last_toast = toast
-        self.toast_overlay.add_toast(toast)
 
     def undo_action(self, toast, snap_name, plug, inverse, slot):
         toast.dismiss()
