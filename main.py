@@ -49,6 +49,7 @@ class Window(Adw.ApplicationWindow):
         self.baseline_problem = None
         self.busy = False
         self.confirming = False
+        self.closing = False
         self.suppress_switch_handler = False
         self.last_toast = None
 
@@ -74,10 +75,6 @@ class Window(Adw.ApplicationWindow):
         about = Gio.SimpleAction.new("about", None)
         about.connect("activate", lambda *a: self.show_about())
         self.add_action(about)
-        forget = Gio.SimpleAction.new("forget-baseline", None)
-        forget.connect("activate", lambda *a: self.confirm_forget())
-        self.add_action(forget)
-        menu.append("Forget saved original state…", "win.forget-baseline")
         sidebar_header.pack_end(Gtk.MenuButton(
             icon_name="open-menu-symbolic", menu_model=menu,
             tooltip_text="Main Menu"))
@@ -94,26 +91,33 @@ class Window(Adw.ApplicationWindow):
         self.page_stack.add_named(self.error_wrapper, "error")
 
         self.baseline_banner = Adw.Banner(
-            title="Could not read the saved original state",
-            button_label="Forget")
+            title="The saved original state cannot be read",
+            button_label="Start a new saved state",
+            valign=Gtk.Align.START)
         self.baseline_banner.connect("button-clicked",
-                                     lambda *a: self.confirm_forget())
-        self.toast_overlay = Adw.ToastOverlay()
+                                     lambda *a: self.confirm_new_baseline())
+        self.toast_overlay = Adw.ToastOverlay(vexpand=True,
+                                               hexpand=True)
         self.toast_overlay.set_child(self.page_stack)
-        overlay = Gtk.Overlay()
-        overlay.set_child(self.toast_overlay)
-        overlay.add_overlay(self.baseline_banner)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(self.baseline_banner)
+        content.append(self.toast_overlay)
 
         self.build_sidebar()
         self.sidebar_rows.select_row(self.sidebar_rows.get_row_at_index(0))
 
         self.main_split.set_sidebar(sidebar)
-        self.main_split.set_content(overlay)
+        self.main_split.set_content(content)
         self.set_content(self.main_split)
 
         self.setup_breakpoints()
+        self.connect("close-request", self.on_close_request)
         self.on_page_selected(self.sidebar_rows,
                               self.sidebar_rows.get_row_at_index(0))
+
+    def on_close_request(self, *args):
+        self.closing = True
+        return False
 
     def page_with_header(self, page):
         header = Adw.HeaderBar()
@@ -373,24 +377,25 @@ class Window(Adw.ApplicationWindow):
             box.append(self.permissions_group(name, connections))
         self.detail_bin.set_child(box)
 
-    def confirm_forget(self):
+    def confirm_new_baseline(self):
         alert = Adw.AlertDialog(
-            heading="Forget saved original state?",
-            body="Deletes the saved original connections of every snap. "
-                 "A new original state is taken at the next launch.")
+            heading="Start a new saved state?",
+            body="The unreadable files are kept on disk. The new saved "
+                 "state is taken from the connections as they are now, "
+                 "so it will no longer be the state from before Ginger "
+                 "was first used.")
         alert.add_response("cancel", "Cancel")
-        alert.add_response("forget", "Forget")
+        alert.add_response("restart", "Start a new saved state")
         alert.set_response_appearance(
-            "forget", Adw.ResponseAppearance.DESTRUCTIVE)
-        alert.choose(self, None, self.on_forget_confirmed, None)
+            "restart", Adw.ResponseAppearance.DESTRUCTIVE)
+        alert.choose(self, None, self.on_new_baseline_confirmed, None)
 
-    def on_forget_confirmed(self, source, result, _):
-        if source.choose_finish(result) != "forget":
+    def on_new_baseline_confirmed(self, source, result, _):
+        if source.choose_finish(result) != "restart":
             return
-        self.on_forget_clicked()
-
-    def on_forget_clicked(self, *args):
-        baseline.forget()
+        import time
+        baseline.quarantine_unreadable(
+            time.strftime("%Y%m%d-%H%M%S"))
         self.load()
 
     def permissions_group(self, name, connections):
@@ -451,14 +456,7 @@ class Window(Adw.ApplicationWindow):
         if self.suppress_switch_handler:
             return
         plug = row.plug_info
-        if self.busy or self.confirming:
-            self.set_switch_active(row, plug["connected"])
-            return
         snap_name = row.plug_snap
-        if snap_name not in self.baselines or self.baseline_problem \
-                or row.plug_slot is None:
-            self.set_switch_active(row, plug["connected"])
-            return
         action = "connect" if row.get_active() else "disconnect"
         if changes.needs_confirmation(action, plug["interface"],
                                       plug["tier"]):
@@ -497,6 +495,17 @@ class Window(Adw.ApplicationWindow):
         self.start_change(row, snap_name, plug, action)
 
     def start_change(self, row, snap_name, plug, action):
+        if self.closing:
+            return
+        if self.busy or self.confirming:
+            self.set_switch_active(row, plug["connected"])
+            self.show_toast("Another change is running")
+            return
+        if snap_name not in self.baselines or self.baseline_problem \
+                or row.plug_slot is None:
+            self.set_switch_active(row, plug["connected"])
+            self.show_toast("No saved original state for this snap yet")
+            return
         self.busy = True
         self.set_switch_active(row, action == "connect")
         row.set_sensitive(False)
@@ -516,6 +525,8 @@ class Window(Adw.ApplicationWindow):
                       slot, outcome, message)
 
     def change_done(self, action, snap_name, plug, slot, outcome, message):
+        if self.closing:
+            return False
         self.busy = False
         self.load()
         if outcome == changes.OUTCOME_DONE:
@@ -523,9 +534,7 @@ class Window(Adw.ApplicationWindow):
         elif outcome == changes.OUTCOME_CANCELLED:
             pass
         elif outcome == changes.OUTCOME_TIMEOUT:
-            toast = self.make_toast("State unknown, reloaded")
-            self.last_toast = toast
-            self.toast_overlay.add_toast(toast)
+            self.show_toast("State unknown, reloaded")
         else:
             alert = Adw.AlertDialog(heading="snapd returned an error",
                                     body=message or "")
@@ -541,15 +550,19 @@ class Window(Adw.ApplicationWindow):
             toast.set_title(GLib.markup_escape_text(title))
         return toast
 
+    def show_toast(self, title):
+        toast = self.make_toast(title)
+        self.last_toast = toast
+        self.toast_overlay.add_toast(toast)
+        return toast
+
     def show_undo_toast(self, action, snap_name, plug, slot):
         inverse = "disconnect" if action == "connect" else "connect"
         verb = "Connected" if action == "connect" else "Disconnected"
-        toast = self.make_toast("%s %s" % (verb, plug))
+        toast = self.show_toast("%s %s" % (verb, plug))
         toast.set_button_label("Undo")
         toast.connect("button-clicked", lambda t: self.undo_action(
             t, snap_name, plug, inverse, slot))
-        self.last_toast = toast
-        self.toast_overlay.add_toast(toast)
 
     def undo_action(self, toast, snap_name, plug, inverse, slot):
         toast.dismiss()
@@ -588,7 +601,13 @@ class Window(Adw.ApplicationWindow):
         return None
 
     def copy_text(self, button, text):
-        self.get_clipboard().set_text(text)
+        # Gdk.Clipboard.set_text is not introspectable on some PyGObject
+        # versions; a string content provider works everywhere.
+        value = GObject.Value()
+        value.init(GObject.TYPE_STRING)
+        value.set_string(text)
+        self.get_clipboard().set_content(
+            Gdk.ContentProvider.new_for_value(value))
 
     def show_error(self, title, message, icon):
         self.error_page.set_title(title)
@@ -610,8 +629,9 @@ class Window(Adw.ApplicationWindow):
             return
         self.baselines = {}
         baseline_problem = None
+        used_backup = False
         try:
-            self.baselines = baseline.load()
+            self.baselines, used_backup = baseline.load()
         except baseline.BaselineError as e:
             baseline_problem = str(e)
         self.snaps = [s for s in snaps if isinstance(s, dict)]
@@ -631,12 +651,15 @@ class Window(Adw.ApplicationWindow):
                     self.baselines.update(new)
         self.baseline_problem = baseline_problem
         if baseline_problem is not None:
-            self.baseline_banner.set_button_label(
-                "Forget" if baseline.forget_would_help(baseline_problem)
-                else "")
+            self.baseline_banner.set_title(
+                "The saved original state cannot be read ("
+                + baseline.baseline_path() + ")")
             self.baseline_banner.set_revealed(True)
         else:
             self.baseline_banner.set_revealed(False)
+            if used_backup:
+                self.show_toast("Using the backup copy of the saved "
+                                "original state")
         if self.selected_snap not in self.snap_names():
             self.selected_snap = None
         if self.search_entry.get_text() != self.query:

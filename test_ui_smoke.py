@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+import copy
 import os
 import re
 import sys
@@ -13,11 +14,26 @@ from test_snapd_client import MockSnapd  # noqa: E402
 import snapd_client  # noqa: E402
 import changes  # noqa: E402
 
-from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, GLib, Graphene, Gtk, Pango  # noqa: E402
 
 SNAP_APP = {"name": "firefox", "type": "app", "version": "1.0",
             "summary": "Browse the web", "apps": [{"name": "firefox"}]}
 SNAP_BASE = {"name": "core24", "type": "base", "version": "2"}
+
+_SHARED = {}
+
+
+def shared_app():
+    """One Adw.Application per process: registering the same app id
+    twice fails, so all test classes share it."""
+    if "app" not in _SHARED:
+        import main
+        _SHARED["main"] = main
+        app = main.App()
+        app.connect("activate", lambda a: None)
+        app.register()
+        _SHARED["app"] = app
+    return _SHARED["main"], _SHARED["app"]
 
 CONNECTIONS = {
     "established": [
@@ -81,14 +97,7 @@ class UISmokeTests(unittest.TestCase):
         cls.tmpdir.cleanup()
 
     def setUp(self):
-        if self.main is None:
-            import main
-            self.__class__.main = main
-        if self.app is None:
-            app = self.main.App()
-            app.connect("activate", lambda a: None)
-            self.__class__.app = app
-            app.register()
+        self.main, self.app = shared_app()
         self.server.snaps = []
         self.server.posts = []
         self.server.responses = []
@@ -111,9 +120,6 @@ class UISmokeTests(unittest.TestCase):
             del os.environ["GINGER_DATA_DIR"]
         else:
             os.environ["GINGER_DATA_DIR"] = self.prev_data_dir
-
-    def tearDown(self):
-        self.win.destroy()
 
     def make_window(self):
         self.win.load()
@@ -503,9 +509,10 @@ class UISmokeTests(unittest.TestCase):
         self.server.snaps = [dict(SNAP_APP)]
         self.server.default_connections = CONNECTIONS
         os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
-        with open(os.path.join(os.environ["GINGER_DATA_DIR"],
-                               "baseline.json"), "w") as f:
-            f.write("not-json{")
+        for name in ("baseline.json", "baseline.json.bak"):
+            with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                                   name), "w") as f:
+                f.write("not-json{")
         win = self.make_window()
         self.assertTrue(win.baseline_banner.get_revealed())
         self.assertEqual(win.page_stack.get_visible_child_name(), "snaps")
@@ -530,31 +537,74 @@ class UISmokeTests(unittest.TestCase):
         finally:
             os.chmod(data_dir, 0o700)
 
-    def test_forget_menu_item_clears_banner(self):
+    def test_new_saved_state_keeps_unreadable_files(self):
         self.server.snaps = [dict(SNAP_APP)]
         self.server.default_connections = CONNECTIONS
         os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
+        for name in ("baseline.json", "baseline.json.bak"):
+            with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                                   name), "w") as f:
+                f.write("not-json{")
         with open(os.path.join(os.environ["GINGER_DATA_DIR"],
-                               "baseline.json"), "w") as f:
-            f.write("not-json{")
+                               "baseline.json.bak"), "w") as f:
+            f.write("also not json")
         win = self.make_window()
         self.assertTrue(win.baseline_banner.get_revealed())
-        win.activate_action("win.forget-baseline", None)
-        ctx = GLib.MainContext.default()
-        for _ in range(10):
-            ctx.iteration(False)
-        alert = [d for w in Gtk.Window.list_toplevels()
-                 for d in self.walk(w)
-                 if isinstance(d, Adw.AlertDialog)]
-        self.assertTrue(alert)
-        alert[0].emit("response", "forget")
+        self.assertIn("cannot be read", win.baseline_banner.get_title())
+        self.assertIn(os.environ["GINGER_DATA_DIR"],
+                      win.baseline_banner.get_title())
+        self.assert_switches_live(win, False)
+        win.baseline_banner.emit("button-clicked")
+        alert = self.wait_alert("Start a new saved state")
+        self.assertIn("no longer be the state from before Ginger",
+                      alert.get_body())
+        alert.emit("response", "restart")
         self.run_until(lambda: not win.baseline_banner.get_revealed())
+        files = sorted(os.listdir(os.environ["GINGER_DATA_DIR"]))
+        self.assertEqual(len(files), 3, files)
+        self.assertTrue(all(
+            "baseline.unreadable-" in f for f in files
+            if not f.startswith("baseline.json")), files)
         import baseline
+        loaded, used_backup = baseline.load()
+        self.assertFalse(used_backup)
+        self.assertIn("firefox", loaded)
+        self.assert_switches_live(win, True)
+
+    def test_cancel_new_saved_state_keeps_files_blocked(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
+        for name in ("baseline.json", "baseline.json.bak"):
+            with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                                   name), "w") as f:
+                f.write("not-json{")
+        win = self.make_window()
+        self.assertTrue(win.baseline_banner.get_revealed())
+        win.baseline_banner.emit("button-clicked")
+        alert = self.wait_alert("Start a new saved state")
+        alert.emit("response", "cancel")
+        self.run_until(lambda: self.win.baseline_banner.get_revealed())
+        with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                               "baseline.json")) as f:
+            self.assertEqual(f.read(), "not-json{")
+        self.assert_switches_live(self.win, False)
+
+    def test_backup_used_when_main_corrupt(self):
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        win = self.make_window()
         path = os.path.join(os.environ["GINGER_DATA_DIR"], "baseline.json")
-        self.assertEqual(
-            [c["plug"] for c in baseline.load(path)["firefox"]["connected"]],
-            ["camera", "network", "removable-media"])
-        self.assertEqual(len(self.row_texts(win)), 1)
+        with open(path) as f:
+            good = f.read()
+        self.assertFalse(win.baseline_banner.get_revealed())
+        with open(path, "w") as f:
+            f.write("not-json{")
+        win.load()
+        self.assertFalse(win.baseline_banner.get_revealed())
+        self.assertIn("backup copy of the saved original state",
+                      win.last_toast.get_title())
+        self.assert_switches_live(win, True)
 
     def test_banner_hidden_when_baseline_ok(self):
         self.server.snaps = [dict(SNAP_APP)]
@@ -598,9 +648,10 @@ class UISmokeTests(unittest.TestCase):
         # A corrupt baseline keeps the gate closed: no change may be sent
         # while the saved original state is unreadable.
         os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
-        with open(os.path.join(os.environ["GINGER_DATA_DIR"],
-                               "baseline.json"), "w") as f:
-            f.write("not-json{")
+        for name in ("baseline.json", "baseline.json.bak"):
+            with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                                   name), "w") as f:
+                f.write("not-json{")
         win = self.load_win()
         self.assertTrue(win.baseline_banner.get_revealed())
         self.assert_switches_live(win, False)
@@ -818,6 +869,261 @@ class UISmokeTests(unittest.TestCase):
         self.assertEqual(body["action"], "connect")
         self.assertEqual(body["slots"][0],
                          {"snap": "slot-provider", "slot": "camera"})
+
+
+    def test_undo_while_busy_shows_toast_single_post(self):
+        # Undo on an old toast while a slow change runs: start_change
+        # refuses the second change and shows a toast, exactly one POST.
+        win = self.load_win()
+        row = self.switch_row(win, "removable-media")
+        self.toggle_switch(row)
+        self.confirm_alert("Disconnect", "confirm")
+        self.wait_change_finished(win)
+        old_toast = win.last_toast
+        self.assertIn("Disconnected removable-media", old_toast.get_title())
+        self.assertEqual(len(self.server.posts), 1)
+        self.server.delay = 0.5
+        try:
+            row2 = self.switch_row(win, "camera")
+            self.toggle_switch(row2)
+            self.confirm_alert("Disconnect camera", "confirm")
+            self.run_until(lambda: win.busy is True)
+            old_toast.emit("button-clicked")
+            self.confirm_alert("Connect", "confirm")
+            self.assertEqual(win.last_toast.get_title(),
+                             "Another change is running")
+            self.run_until(lambda: win.busy is False)
+            self.assertEqual(len(self.server.posts), 2)
+        finally:
+            self.server.delay = 0
+
+    def test_undo_without_baseline_shows_toast_no_post(self):
+        # The baseline gate lives in start_change: losing the
+        # baseline while an undo toast is open blocks the undo.
+        win = self.load_win()
+        row = self.switch_row(win, "camera")
+        self.toggle_switch(row)
+        self.confirm_alert("Disconnect", "confirm")
+        self.wait_change_finished(win)
+        toast = win.last_toast
+        self.assertIn("Disconnected camera", toast.get_title())
+        self.assertEqual(len(self.server.posts), 1)
+        for name in ("baseline.json", "baseline.json.bak"):
+            with open(os.path.join(os.environ["GINGER_DATA_DIR"],
+                                   name), "w") as f:
+                f.write("not-json{")
+        win.load()
+        self.assertTrue(win.baseline_banner.get_revealed())
+        toast.emit("button-clicked")
+        self.run_until(lambda: win.last_toast is not toast)
+        self.assertEqual(len(self.server.posts), 1)
+        self.assertIn("original state", win.last_toast.get_title())
+
+    def rename_plug(self, conns, plug, rename):
+        for p in conns["plugs"]:
+            if p["plug"] == plug:
+                p["plug"] = rename
+        for e in conns["established"]:
+            if e["plug"]["plug"] == plug:
+                e["plug"]["plug"] = rename
+        return conns
+
+    def test_markup_in_connect_confirmation_not_parsed(self):
+        plug = "<b>x</b>&amp;"
+        conns = copy.deepcopy(CONNECTIONS)
+        conns["established"] = [e for e in conns["established"]
+                                if e["plug"]["plug"] != "removable-media"]
+        conns["undesired"].append(
+            {"slot": {"snap": "snapd", "slot": "removable-media"},
+             "plug": {"snap": "firefox", "plug": plug},
+             "interface": "removable-media", "manual": True})
+        self.rename_plug(conns, "removable-media", plug)
+        win = self.load_win(connections=conns)
+        row = self.switch_row(win, plug)
+        self.assertFalse(row.get_active())
+        self.toggle_switch(row)
+        alert = self.wait_alert("Connect")
+        self.assertIn(plug, alert.get_heading())
+        self.assertFalse(alert.get_heading_use_markup())
+        self.assertIn(plug, alert.get_body())
+        self.assertFalse(alert.get_body_use_markup())
+        alert.emit("response", "cancel")
+
+    def test_markup_in_disconnect_confirmation_not_parsed(self):
+        plug = "<b>x</b>&amp;"
+        conns = copy.deepcopy(CONNECTIONS)
+        self.rename_plug(conns, "camera", plug)
+        win = self.load_win(connections=conns)
+        row = self.switch_row(win, plug)
+        self.assertTrue(row.get_active())
+        self.toggle_switch(row)
+        alert = self.wait_alert("Disconnect")
+        self.assertIn(plug, alert.get_heading())
+        self.assertFalse(alert.get_heading_use_markup())
+        self.assertIn(plug, alert.get_body())
+        self.assertFalse(alert.get_body_use_markup())
+        alert.emit("response", "cancel")
+
+    def test_change_done_while_closing_does_nothing(self):
+        win = self.load_win()
+        win.on_close_request()
+        self.assertTrue(win.closing)
+        self.assertIsNone(win.last_toast)
+        win.change_done("disconnect", "firefox", "camera",
+                        ("snapd", "camera"), changes.OUTCOME_DONE, None)
+        self.assertIsNone(win.last_toast)
+        self.assertEqual(self.server.posts, [])
+
+    def test_transient_poll_error_shows_state_unknown(self):
+        # A transient error while polling (for example a read timeout)
+        # reloads and shows the unknown-state toast, not an error dialog.
+        win = self.load_win()
+        orig = win.client.get_change
+        calls = []
+
+        def flaky(cid):
+            calls.append(cid)
+            if len(calls) > 1:
+                raise snapd_client.SnapdError("transient",
+                                              kind="request-timeout")
+            return {"status": "Doing", "ready": False, "err": None}
+        win.client.get_change = flaky
+        try:
+            row = self.switch_row(win, "camera")
+            self.toggle_switch(row)
+            self.confirm_alert("Disconnect", "confirm")
+            self.wait_change_finished(win)
+        finally:
+            win.client.get_change = orig
+        self.assertEqual(win.last_toast.get_title(),
+                         "State unknown, reloaded")
+        # A dialog is only closed by AdwDialog.close(); emitting
+        # ::response completes choose() but leaves the dialog open.
+        alerts = [d for w in Gtk.Window.list_toplevels()
+                  for d in self.walk(w) if isinstance(d, Adw.AlertDialog)]
+        self.assertTrue(all(d.get_heading() != "snapd returned an error"
+                             for d in alerts), alerts)
+        self.assertTrue(self.switch_row(win, "camera").get_active())
+
+
+class PointerPickTests(unittest.TestCase):
+    """win.pick exercises pointer picking; emitting signals does not.
+
+    A widget covering a pane (an overlay child) is picked before the
+    content under it even when it draws nothing.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.main, cls.app = shared_app()
+        cls.tmpdir = tempfile.TemporaryDirectory()
+        cls.socket_path = os.path.join(cls.tmpdir.name, "snapd.socket")
+        cls.server = MockSnapd(cls.socket_path)
+        os.environ["SNAPD_SOCKET"] = cls.socket_path
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.stop()
+        cls.tmpdir.cleanup()
+
+    def setUp(self):
+        self.main, self.app = shared_app()
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        self.server.posts = []
+        self.server.responses = []
+        self.server.interface_responses = []
+        self.server.change_script = {}
+        self.server.next_change_id = 1
+        self.server.delay = 0
+        self.prev_data_dir = os.environ.get("GINGER_DATA_DIR")
+        self.tmpdir_i = tempfile.TemporaryDirectory()
+        os.environ["GINGER_DATA_DIR"] = self.tmpdir_i.name
+        self.win = self.main.Window(self.app)
+        self.win.present()
+        self.win.load()
+        self.win.on_snap_selected(self.win.snaps_list,
+                                  self.win.snaps_list.get_row_at_index(0))
+        self.run_until(lambda: self.win.get_mapped()
+                        and self.win.snaps_list.get_width() > 1
+                        and self.win.detail_pane.get_width() > 1)
+
+    def tearDown(self):
+        self.win.destroy()
+        self.tmpdir_i.cleanup()
+        if self.prev_data_dir is None:
+            del os.environ["GINGER_DATA_DIR"]
+        else:
+            os.environ["GINGER_DATA_DIR"] = self.prev_data_dir
+
+    def run_until(self, condition, timeout_ms=3000):
+        ctx = GLib.MainContext.default()
+        end = GLib.get_monotonic_time() + timeout_ms * 1000
+        while not condition() and GLib.get_monotonic_time() < end:
+            if not ctx.iteration(False):
+                time.sleep(0.01)
+        self.assertTrue(condition(), "run_until timed out")
+
+    def point_in(self, target):
+        point = Graphene.Point()
+        point.x = target.get_width() / 2
+        point.y = min(target.get_height() / 2, 5)
+        result = target.compute_point(self.win, point)
+        if isinstance(result, tuple):
+            ok, out = result
+        else:
+            ok, out = True, result
+        self.assertTrue(ok, "compute_point failed")
+        return out.x, out.y
+
+    def pick(self, target):
+        x, y = self.point_in(target)
+        return self.win.pick(x, y, Gtk.PickFlags.DEFAULT)
+
+    def assert_picks_inside(self, target, pane, banner_hidden):
+        widget = self.pick(target)
+        self.assertIsNotNone(widget)
+        self.assertTrue(widget.is_ancestor(pane) or widget is pane,
+                        "picked %s, expected inside %s"
+                        % (widget, pane))
+        self.assertFalse(widget is self.win.baseline_banner
+                         or widget.is_ancestor(self.win.baseline_banner),
+                         "picked the banner over the pane")
+        self.assertEqual(self.win.baseline_banner.get_revealed(),
+                         not banner_hidden)
+
+    def test_list_and_detail_pickable_banner_hidden(self):
+        self.assertFalse(self.win.baseline_banner.get_revealed())
+        self.assert_picks_inside(self.win.snaps_list, self.win.snaps_list,
+                                 banner_hidden=True)
+        self.assert_picks_inside(self.win.detail_pane, self.win.detail_pane,
+                                 banner_hidden=True)
+
+    def test_list_and_detail_pickable_banner_revealed(self):
+        self.win.baseline_banner.set_revealed(True)
+        self.run_until(lambda: self.win.baseline_banner.get_height() > 1)
+        self.assert_picks_inside(self.win.snaps_list, self.win.snaps_list,
+                                 banner_hidden=False)
+        self.assert_picks_inside(self.win.detail_pane, self.win.detail_pane,
+                                 banner_hidden=False)
+
+    def test_header_buttons_pickable(self):
+        picked = 0
+        for button in (self.win.sidebar_toggle, self.win.search_button,
+                       self.win.filter_button):
+            # The sidebar toggle is visible only when collapsed.
+            if not button.get_visible():
+                continue
+            picked += 1
+            widget = self.pick(button)
+            self.assertIsNotNone(widget)
+            self.assertTrue(widget is button or widget.is_ancestor(button),
+                            "picked %s, expected %s" % (widget, button))
+        self.assertGreaterEqual(picked, 2)
+
+    def test_unrevealed_banner_takes_no_space(self):
+        self.assertFalse(self.win.baseline_banner.get_revealed())
+        self.assertEqual(self.win.baseline_banner.get_height(), 0)
 
 
 class PackagingTests(unittest.TestCase):

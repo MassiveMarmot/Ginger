@@ -46,28 +46,38 @@ def confirmation_body(action, plug, interface, tier):
         parts.append("Connect %s (%s)." % (plug, interface))
         warning = TIER2_WARNING.get(interface, GENERIC_TIER2_WARNING)
         parts.append(warning)
-        if tier == 3:
-            parts.append("Ginger never connects this interface.")
     return " ".join(parts)
 
 
 def run_change(client, action, plug_snap, plug, slot_snap, slot,
                timeout=None):
-    """Runs on the worker thread. Returns (outcome, message)."""
-    try:
-        change_id = client.change_interface(action, plug_snap, plug,
-                                            slot_snap, slot,
-                                            timeout=timeout) \
-            if timeout is not None \
-            else client.change_interface(action, plug_snap, plug,
-                                          slot_snap, slot)
-        client.wait_for_change(change_id)
-        return OUTCOME_DONE, None
-    except Exception as e:
+    """Runs on the worker thread. Returns (outcome, message).
+
+    A transient error while polling the change (for example a read
+    timeout) is reported as a timeout: the change may still have
+    applied, so the caller reloads and shows the state as unknown.
+    """
+    def classify(e, polling):
         kind = getattr(e, "kind", None)
         if kind == "auth-cancelled":
             return OUTCOME_CANCELLED, None
-        if kind == "request-timeout":
+        if kind == "request-timeout" or kind == "change-timeout" \
+                or (polling and kind == "connection-failed"):
             return OUTCOME_TIMEOUT, None
-        message = getattr(e, "message", str(e))
-        return OUTCOME_ERROR, message
+        return OUTCOME_ERROR, getattr(e, "message", str(e))
+
+    try:
+        if timeout is not None:
+            change_id = client.change_interface(action, plug_snap, plug,
+                                                 slot_snap, slot,
+                                                 timeout=timeout)
+        else:
+            change_id = client.change_interface(action, plug_snap, plug,
+                                                slot_snap, slot)
+    except Exception as e:
+        return classify(e, polling=False)
+    try:
+        client.wait_for_change(change_id)
+        return OUTCOME_DONE, None
+    except Exception as e:
+        return classify(e, polling=True)
