@@ -42,7 +42,8 @@ class BaselineTests(unittest.TestCase):
             saved1 = f.read()
         connections2 = {"established": []}
         self.assertEqual(
-            baseline.capture_new(baseline.load(), {"firefox": connections2}),
+            baseline.capture_new(baseline.load()[0],
+                                {"firefox": connections2}),
             {})
         with open(self.path()) as f:
             self.assertEqual(f.read(), saved1)
@@ -51,17 +52,17 @@ class BaselineTests(unittest.TestCase):
         baseline.save_snaps(baseline.capture_new(
             {}, {"firefox": {"established": [established("camera")]}}))
         later = {"thunderbird": {"established": []}}
-        new = baseline.capture_new(baseline.load(), later)
+        new = baseline.capture_new(baseline.load()[0], later)
         self.assertIn("thunderbird", new)
-        baseline.save_snaps({**baseline.load(), **new})
-        self.assertEqual(sorted(baseline.load()),
+        baseline.save_snaps({**baseline.load()[0], **new})
+        self.assertEqual(sorted(baseline.load()[0]),
                          ["firefox", "thunderbird"])
 
     def test_atomic_write_no_temp_left(self):
         baseline.save_snaps({"firefox": baseline.entry_for(
             {"established": [established("camera")]}, "firefox")})
         self.assertEqual(sorted(os.listdir(self.tmpdir.name)),
-                         ["baseline.json"])
+                         ["baseline.json", "baseline.json.bak"])
 
     def test_roundtrip(self):
         entry = baseline.entry_for(
@@ -69,7 +70,7 @@ class BaselineTests(unittest.TestCase):
                              established("network", interface="network")]},
             "firefox")
         baseline.save_snaps({"firefox": entry})
-        self.assertEqual(baseline.load()["firefox"], entry)
+        self.assertEqual(baseline.load()[0]["firefox"], entry)
 
     def test_entry_shape(self):
         entry = baseline.entry_for(
@@ -116,7 +117,7 @@ class BaselineTests(unittest.TestCase):
                 baseline.load()
 
     def test_missing_file_is_empty(self):
-        self.assertEqual(baseline.load(), {})
+        self.assertEqual(baseline.load(), ({}, False))
 
     def test_entry_records_connected_state_only(self):
         entry = baseline.entry_for(
@@ -127,19 +128,90 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual([c["plug"] for c in entry["connected"]],
                          ["camera"])
 
-    def test_forget_deletes_file(self):
+    def test_backup_written_with_main_file(self):
+        snaps = {"firefox": baseline.entry_for(
+            {"established": [established("camera")]}, "firefox")}
+        baseline.save_snaps(snaps)
+        backup = self.path() + ".bak"
+        self.assertTrue(os.path.exists(backup))
+        with open(backup) as f:
+            self.assertEqual(json.load(f),
+                             {"version": baseline.BASELINE_VERSION,
+                              "snaps": snaps})
+
+    def test_backup_content_matches_after_new_snaps(self):
         baseline.save_snaps({"firefox": baseline.entry_for(
             {"established": []}, "firefox")})
-        self.assertTrue(baseline.forget())
+        baseline.save_snaps({"firefox": baseline.entry_for(
+            {"established": []}, "firefox"),
+            "thunderbird": baseline.entry_for(
+            {"established": []}, "thunderbird")})
+        self.assertEqual(baseline.load()[0], baseline.load()[0])
+        with open(self.path() + ".bak") as f:
+            self.assertEqual(sorted(json.load(f)["snaps"]),
+                             ["firefox", "thunderbird"])
+
+    def test_corrupt_main_with_valid_backup_is_used(self):
+        snaps = {"firefox": baseline.entry_for(
+            {"established": [established("camera")]}, "firefox")}
+        baseline.save_snaps(snaps)
+        with open(self.path(), "w") as f:
+            f.write("not-json{")
+        loaded, used_backup = baseline.load()
+        self.assertEqual(loaded, snaps)
+        self.assertTrue(used_backup)
+        # The corrupt file is left untouched.
+        with open(self.path()) as f:
+            self.assertEqual(f.read(), "not-json{")
+
+    def test_both_corrupt_raises_and_keeps_files(self):
+        baseline.save_snaps({"firefox": baseline.entry_for(
+            {"established": []}, "firefox")})
+        with open(self.path(), "w") as f:
+            f.write("not-json{")
+        with open(self.path() + ".bak", "w") as f:
+            f.write("also not json")
+        with self.assertRaises(baseline.BaselineError):
+            baseline.load()
+        with open(self.path()) as f:
+            self.assertEqual(f.read(), "not-json{")
+        with open(self.path() + ".bak") as f:
+            self.assertEqual(f.read(), "also not json")
+
+    def test_quarantine_moves_never_deletes(self):
+        baseline.save_snaps({"firefox": baseline.entry_for(
+            {"established": []}, "firefox")})
+        moved = baseline.quarantine_unreadable("20260101-000000")
+        self.assertEqual(len(moved), 2)
         self.assertFalse(os.path.exists(self.path()))
-        self.assertFalse(baseline.forget())
+        self.assertFalse(os.path.exists(self.path() + ".bak"))
+        for target in moved:
+            self.assertTrue(os.path.exists(target))
+        self.assertTrue(all(
+            "baseline.unreadable-20260101-000000" in p for p in moved))
+
+    def test_no_delete_function_exists(self):
+        root = os.path.dirname(os.path.abspath(baseline.__file__))
+        for name in ("baseline.py", "main.py"):
+            with open(os.path.join(root, name)) as f:
+                src = f.read()
+            for line in src.splitlines():
+                stripped = line.strip()
+                for forbidden in ("os.remove(", "os.unlink(",
+                                   "shutil.rmtree("):
+                    if forbidden in stripped:
+                        # Only the temp file of a failed atomic write
+                        # may be cleaned up, never a baseline file.
+                        self.assertIn("tmp", stripped,
+                                      "%s in %s deletes a non-temp file"
+                                      % (forbidden, name))
 
     def test_markup_names_survive(self):
         entry = baseline.entry_for(
             {"established": [established("<b>evil</b>&amp;")]},
             "<b>evil</b>&amp;")
         baseline.save_snaps({"<b>evil</b>&amp;": entry})
-        self.assertEqual(baseline.load()["<b>evil</b>&amp;"], entry)
+        self.assertEqual(baseline.load()[0]["<b>evil</b>&amp;"], entry)
 
     @unittest.skipIf(os.geteuid() == 0,
                      "chmod is ineffective as root")

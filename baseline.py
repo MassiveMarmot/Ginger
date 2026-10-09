@@ -7,6 +7,7 @@ import tempfile
 
 BASELINE_VERSION = 2
 BASELINE_FILENAME = "baseline.json"
+BACKUP_FILENAME = BASELINE_FILENAME + ".bak"
 
 
 class BaselineError(Exception):
@@ -34,6 +35,14 @@ def baseline_path():
     return _baseline_path()
 
 
+def _backup_path():
+    return _baseline_path() + ".bak"
+
+
+def backup_path():
+    return _backup_path()
+
+
 def _valid_entry(entry):
     if not isinstance(entry, dict) or set(entry) != {"connected"}:
         return False
@@ -49,15 +58,7 @@ def _valid_entry(entry):
     return True
 
 
-def load(path=None):
-    path = path or _baseline_path()
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        return {}
-    except (OSError, json.JSONDecodeError) as e:
-        raise BaselineError("unreadable baseline file: %s" % e)
+def _parse(data):
     if not isinstance(data, dict) \
             or data.get("version") != BASELINE_VERSION \
             or not isinstance(data.get("snaps"), dict):
@@ -70,11 +71,32 @@ def load(path=None):
     return snaps
 
 
-def save_snaps(snaps):
-    """Write all baselines atomically. One write per launch."""
-    path = _baseline_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    data = {"version": BASELINE_VERSION, "snaps": snaps}
+def load(path=None):
+    """Returns (snaps, used_backup). Falls back to the .bak copy when
+    the main file is unreadable or invalid."""
+    path = path or _baseline_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            return _parse(json.load(f)), False
+    except FileNotFoundError:
+        try:
+            with open(_backup_path(), encoding="utf-8") as f:
+                return _parse(json.load(f)), True
+        except FileNotFoundError:
+            return {}, False
+        except (OSError, json.JSONDecodeError, BaselineError) as e:
+            raise BaselineError("unreadable baseline backup: %s" % e)
+    except (OSError, json.JSONDecodeError, BaselineError) as e:
+        try:
+            with open(_backup_path(), encoding="utf-8") as f:
+                return _parse(json.load(f)), True
+        except FileNotFoundError:
+            raise BaselineError("unreadable baseline file: %s" % e)
+        except (OSError, json.JSONDecodeError, BaselineError):
+            raise BaselineError("unreadable baseline file: %s" % e)
+
+
+def _atomic_write(path, data):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path),
                                prefix=".baseline-", suffix=".tmp")
     try:
@@ -85,10 +107,21 @@ def save_snaps(snaps):
         os.replace(tmp, path)
     except BaseException:
         try:
-            os.unlink(tmp)
+            os.remove(tmp)
         except FileNotFoundError:
             pass
         raise
+
+
+def save_snaps(snaps):
+    """Write the main file, then the .bak copy. Both are written only
+    when there is something new (first write or new snaps). Entries
+    for snaps that are no longer installed are kept."""
+    path = _baseline_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    data = {"version": BASELINE_VERSION, "snaps": snaps}
+    _atomic_write(path, data)
+    _atomic_write(_backup_path(), data)
 
 
 def entry_for(connections, snap):
@@ -118,19 +151,15 @@ def capture_new(existing, connections_by_snap):
     return new
 
 
-def forget(path=None):
-    path = path or _baseline_path()
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        return False
-    return True
-
-
-SAVE_PROBLEM_PREFIX = "Could not save the original state"
-
-
-def forget_would_help(problem):
-    """Forgetting helps only when the file itself is the problem,
-    not when writing it failed."""
-    return not str(problem).startswith(SAVE_PROBLEM_PREFIX)
+def quarantine_unreadable(timestamp):
+    """Move an unreadable baseline and its backup out of the way;
+    nothing is ever deleted."""
+    moved = []
+    for path in (_baseline_path(), _backup_path()):
+        if os.path.exists(path):
+            target = os.path.join(
+                os.path.dirname(path),
+                "baseline.unreadable-%s.json" % timestamp)
+            os.replace(path, target)
+            moved.append(target)
+    return moved

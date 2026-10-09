@@ -75,10 +75,6 @@ class Window(Adw.ApplicationWindow):
         about = Gio.SimpleAction.new("about", None)
         about.connect("activate", lambda *a: self.show_about())
         self.add_action(about)
-        forget = Gio.SimpleAction.new("forget-baseline", None)
-        forget.connect("activate", lambda *a: self.confirm_forget())
-        self.add_action(forget)
-        menu.append("Forget saved original state…", "win.forget-baseline")
         sidebar_header.pack_end(Gtk.MenuButton(
             icon_name="open-menu-symbolic", menu_model=menu,
             tooltip_text="Main Menu"))
@@ -95,10 +91,11 @@ class Window(Adw.ApplicationWindow):
         self.page_stack.add_named(self.error_wrapper, "error")
 
         self.baseline_banner = Adw.Banner(
-            title="Could not read the saved original state",
-            button_label="Forget", valign=Gtk.Align.START)
+            title="The saved original state cannot be read",
+            button_label="Start a new saved state",
+            valign=Gtk.Align.START)
         self.baseline_banner.connect("button-clicked",
-                                     lambda *a: self.confirm_forget())
+                                     lambda *a: self.confirm_new_baseline())
         self.toast_overlay = Adw.ToastOverlay(vexpand=True,
                                                hexpand=True)
         self.toast_overlay.set_child(self.page_stack)
@@ -380,24 +377,25 @@ class Window(Adw.ApplicationWindow):
             box.append(self.permissions_group(name, connections))
         self.detail_bin.set_child(box)
 
-    def confirm_forget(self):
+    def confirm_new_baseline(self):
         alert = Adw.AlertDialog(
-            heading="Forget saved original state?",
-            body="Deletes the saved original connections of every snap. "
-                 "A new original state is taken at the next launch.")
+            heading="Start a new saved state?",
+            body="The unreadable files are kept on disk. The new saved "
+                 "state is taken from the connections as they are now, "
+                 "so it will no longer be the state from before Ginger "
+                 "was first used.")
         alert.add_response("cancel", "Cancel")
-        alert.add_response("forget", "Forget")
+        alert.add_response("restart", "Start a new saved state")
         alert.set_response_appearance(
-            "forget", Adw.ResponseAppearance.DESTRUCTIVE)
-        alert.choose(self, None, self.on_forget_confirmed, None)
+            "restart", Adw.ResponseAppearance.DESTRUCTIVE)
+        alert.choose(self, None, self.on_new_baseline_confirmed, None)
 
-    def on_forget_confirmed(self, source, result, _):
-        if source.choose_finish(result) != "forget":
+    def on_new_baseline_confirmed(self, source, result, _):
+        if source.choose_finish(result) != "restart":
             return
-        self.on_forget_clicked()
-
-    def on_forget_clicked(self, *args):
-        baseline.forget()
+        import time
+        baseline.quarantine_unreadable(
+            time.strftime("%Y%m%d-%H%M%S"))
         self.load()
 
     def permissions_group(self, name, connections):
@@ -631,8 +629,9 @@ class Window(Adw.ApplicationWindow):
             return
         self.baselines = {}
         baseline_problem = None
+        used_backup = False
         try:
-            self.baselines = baseline.load()
+            self.baselines, used_backup = baseline.load()
         except baseline.BaselineError as e:
             baseline_problem = str(e)
         self.snaps = [s for s in snaps if isinstance(s, dict)]
@@ -652,12 +651,15 @@ class Window(Adw.ApplicationWindow):
                     self.baselines.update(new)
         self.baseline_problem = baseline_problem
         if baseline_problem is not None:
-            self.baseline_banner.set_button_label(
-                "Forget" if baseline.forget_would_help(baseline_problem)
-                else "")
+            self.baseline_banner.set_title(
+                "The saved original state cannot be read ("
+                + baseline.baseline_path() + ")")
             self.baseline_banner.set_revealed(True)
         else:
             self.baseline_banner.set_revealed(False)
+            if used_backup:
+                self.show_toast("Using the backup copy of the saved "
+                                "original state")
         if self.selected_snap not in self.snap_names():
             self.selected_snap = None
         if self.search_entry.get_text() != self.query:
