@@ -99,7 +99,8 @@ class Window(Adw.ApplicationWindow):
             button_label="Forget", valign=Gtk.Align.START)
         self.baseline_banner.connect("button-clicked",
                                      lambda *a: self.confirm_forget())
-        self.toast_overlay = Adw.ToastOverlay()
+        self.toast_overlay = Adw.ToastOverlay(vexpand=True,
+                                               hexpand=True)
         self.toast_overlay.set_child(self.page_stack)
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content.append(self.baseline_banner)
