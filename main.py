@@ -100,15 +100,15 @@ class Window(Adw.ApplicationWindow):
                                      lambda *a: self.confirm_forget())
         self.toast_overlay = Adw.ToastOverlay()
         self.toast_overlay.set_child(self.page_stack)
-        overlay = Gtk.Overlay()
-        overlay.set_child(self.toast_overlay)
-        overlay.add_overlay(self.baseline_banner)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(self.baseline_banner)
+        content.append(self.toast_overlay)
 
         self.build_sidebar()
         self.sidebar_rows.select_row(self.sidebar_rows.get_row_at_index(0))
 
         self.main_split.set_sidebar(sidebar)
-        self.main_split.set_content(overlay)
+        self.main_split.set_content(content)
         self.set_content(self.main_split)
 
         self.setup_breakpoints()
