@@ -603,7 +603,13 @@ class Window(Adw.ApplicationWindow):
         return None
 
     def copy_text(self, button, text):
-        self.get_clipboard().set_text(text)
+        # Gdk.Clipboard.set_text is not introspectable on some PyGObject
+        # versions; a string content provider works everywhere.
+        value = GObject.Value()
+        value.init(GObject.TYPE_STRING)
+        value.set_string(text)
+        self.get_clipboard().set_content(
+            Gdk.ContentProvider.new_for_value(value))
 
     def show_error(self, title, message, icon):
         self.error_page.set_title(title)
