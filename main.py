@@ -96,7 +96,7 @@ class Window(Adw.ApplicationWindow):
 
         self.baseline_banner = Adw.Banner(
             title="Could not read the saved original state",
-            button_label="Forget")
+            button_label="Forget", valign=Gtk.Align.START)
         self.baseline_banner.connect("button-clicked",
                                      lambda *a: self.confirm_forget())
         self.toast_overlay = Adw.ToastOverlay()

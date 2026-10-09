@@ -13,7 +13,7 @@ from test_snapd_client import MockSnapd  # noqa: E402
 import snapd_client  # noqa: E402
 import changes  # noqa: E402
 
-from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, GLib, Graphene, Gtk, Pango  # noqa: E402
 
 SNAP_APP = {"name": "firefox", "type": "app", "version": "1.0",
             "summary": "Browse the web", "apps": [{"name": "firefox"}]}
@@ -818,6 +818,120 @@ class UISmokeTests(unittest.TestCase):
         self.assertEqual(body["action"], "connect")
         self.assertEqual(body["slots"][0],
                          {"snap": "slot-provider", "slot": "camera"})
+
+
+class PointerPickTests(unittest.TestCase):
+    """win.pick exercises pointer picking; emitting signals does not.
+
+    A widget covering a pane (an overlay child) is picked before the
+    content under it even when it draws nothing.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = tempfile.TemporaryDirectory()
+        cls.socket_path = os.path.join(cls.tmpdir.name, "snapd.socket")
+        cls.server = MockSnapd(cls.socket_path)
+        os.environ["SNAPD_SOCKET"] = cls.socket_path
+        cls.app = None
+        cls.main = None
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.stop()
+        cls.tmpdir.cleanup()
+
+    def setUp(self):
+        if self.main is None:
+            import main
+            self.__class__.main = main
+        if self.app is None:
+            app = self.main.App()
+            app.connect("activate", lambda a: None)
+            self.__class__.app = app
+            app.register()
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        self.server.posts = []
+        self.prev_data_dir = os.environ.get("GINGER_DATA_DIR")
+        self.tmpdir_i = tempfile.TemporaryDirectory()
+        os.environ["GINGER_DATA_DIR"] = self.tmpdir_i.name
+        self.win = self.main.Window(self.app)
+        self.win.present()
+        self.win.load()
+        self.win.on_snap_selected(self.win.snaps_list,
+                                  self.win.snaps_list.get_row_at_index(0))
+        self.run_until(lambda: self.win.get_mapped()
+                        and self.win.snaps_list.get_width() > 1
+                        and self.win.detail_pane.get_width() > 1)
+
+    def tearDown(self):
+        self.win.destroy()
+        self.tmpdir_i.cleanup()
+        if self.prev_data_dir is None:
+            del os.environ["GINGER_DATA_DIR"]
+        else:
+            os.environ["GINGER_DATA_DIR"] = self.prev_data_dir
+
+    def run_until(self, condition, timeout_ms=3000):
+        ctx = GLib.MainContext.default()
+        end = GLib.get_monotonic_time() + timeout_ms * 1000
+        while not condition() and GLib.get_monotonic_time() < end:
+            if not ctx.iteration(False):
+                time.sleep(0.01)
+        self.assertTrue(condition(), "run_until timed out")
+
+    def point_in(self, target):
+        point = Graphene.Point()
+        point.x = target.get_width() / 2
+        point.y = min(target.get_height() / 2, 5)
+        out = Graphene.Point()
+        ok = target.compute_point(self.win, point, out)
+        self.assertTrue(ok, "compute_point failed")
+        return out.x, out.y
+
+    def pick(self, target):
+        x, y = self.point_in(target)
+        return self.win.pick(x, y, Gtk.PickFlags.DEFAULT)
+
+    def assert_picks_inside(self, target, pane, banner_hidden):
+        widget = self.pick(target)
+        self.assertIsNotNone(widget)
+        self.assertTrue(widget.is_ancestor(pane) or widget is pane,
+                        "picked %s, expected inside %s"
+                        % (widget, pane))
+        self.assertFalse(widget is self.win.baseline_banner
+                         or widget.is_ancestor(self.win.baseline_banner),
+                         "picked the banner over the pane")
+        self.assertEqual(self.win.baseline_banner.get_revealed(),
+                         not banner_hidden)
+
+    def test_list_and_detail_pickable_banner_hidden(self):
+        self.assertFalse(self.win.baseline_banner.get_revealed())
+        self.assert_picks_inside(self.win.snaps_list, self.win.snaps_list,
+                                 banner_hidden=True)
+        self.assert_picks_inside(self.win.detail_pane, self.win.detail_pane,
+                                 banner_hidden=True)
+
+    def test_list_and_detail_pickable_banner_revealed(self):
+        self.win.baseline_banner.set_revealed(True)
+        self.run_until(lambda: self.win.baseline_banner.get_height() > 1)
+        self.assert_picks_inside(self.win.snaps_list, self.win.snaps_list,
+                                 banner_hidden=False)
+        self.assert_picks_inside(self.win.detail_pane, self.win.detail_pane,
+                                 banner_hidden=False)
+
+    def test_header_buttons_pickable(self):
+        for button in (self.win.sidebar_toggle, self.win.search_button,
+                       self.win.filter_button):
+            widget = self.pick(button)
+            self.assertIsNotNone(widget)
+            self.assertTrue(widget is button or widget.is_ancestor(button),
+                            "picked %s, expected %s" % (widget, button))
+
+    def test_unrevealed_banner_takes_no_space(self):
+        self.assertFalse(self.win.baseline_banner.get_revealed())
+        self.assertEqual(self.win.baseline_banner.get_height(), 0)
 
 
 class PackagingTests(unittest.TestCase):
