@@ -94,6 +94,7 @@ class UISmokeTests(unittest.TestCase):
         self.server.responses = []
         self.server.interface_responses = []
         self.server.change_script = {}
+        self.server.next_change_id = 1
         self.server.delay = 0
         self.server.default_connections = {
             "established": [], "undesired": [], "plugs": [], "slots": []}
@@ -142,6 +143,12 @@ class UISmokeTests(unittest.TestCase):
         while child:
             yield from self.walk(child)
             child = child.get_next_sibling()
+
+    def wait_change_finished(self, win):
+        # start_change sets busy synchronously when the dialog response is
+        # emitted, so waiting for True then False is race-free.
+        self.run_until(lambda: win.busy is True)
+        self.run_until(lambda: win.busy is False)
 
     def run_until(self, condition, timeout_ms=2000):
         ctx = GLib.MainContext.default()
@@ -655,7 +662,7 @@ class UISmokeTests(unittest.TestCase):
             "action": "disconnect",
             "plugs": [{"snap": "firefox", "plug": "camera"}],
             "slots": [{"snap": "snapd", "slot": "camera"}]})
-        self.run_until(lambda: win.busy is False)
+        self.wait_change_finished(win)
 
     def test_change_error_shows_plain_text_and_reverts(self):
         win = self.load_win()
@@ -665,7 +672,7 @@ class UISmokeTests(unittest.TestCase):
              "summary": "failed"}]
         self.toggle_switch(row)
         self.confirm_alert("Disconnect", "confirm")
-        self.run_until(lambda: win.busy is False)
+        self.wait_change_finished(win)
         error = [d for w in Gtk.Window.list_toplevels()
                  for d in self.walk(w) if isinstance(d, Adw.AlertDialog)
                  and d.get_heading() == "snapd returned an error"]
@@ -683,7 +690,7 @@ class UISmokeTests(unittest.TestCase):
                        "kind": "auth-cancelled"}}))
         self.toggle_switch(row)
         self.confirm_alert("Disconnect", "confirm")
-        self.run_until(lambda: win.busy is False)
+        self.wait_change_finished(win)
         self.run_until(lambda: self.switch_row(win, "camera") is not None)
         row = self.switch_row(win, "camera")
         self.assertTrue(row.get_active())
@@ -724,7 +731,7 @@ class UISmokeTests(unittest.TestCase):
         self.run_until(lambda: self.server.posts)
         path, body, allowed = self.server.posts[0]
         self.assertEqual(body["action"], "connect")
-        self.run_until(lambda: win.busy is False)
+        self.wait_change_finished(win)
         self.run_until(lambda: self.switch_row(win, "removable-media")
                        is not None)
         row = self.switch_row(win, "removable-media")
@@ -774,7 +781,7 @@ class UISmokeTests(unittest.TestCase):
         row = self.switch_row(win, "camera")
         self.toggle_switch(row)
         self.confirm_alert("Disconnect", "confirm")
-        self.run_until(lambda: win.busy is False)
+        self.wait_change_finished(win)
         toast = win.last_toast
         self.assertIsNotNone(toast)
         self.assertIn("Disconnected camera", toast.get_title())
