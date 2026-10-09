@@ -571,6 +571,13 @@ class Window(Adw.ApplicationWindow):
         else:
             self.start_change(row, snap_name, info, inverse)
 
+    def walk(self, widget):
+        yield widget
+        child = widget.get_first_child()
+        while child:
+            yield from self.walk(child)
+            child = child.get_next_sibling()
+
     def find_plug_row(self, snap_name, plug):
         if snap_name != self.selected_snap:
             return None

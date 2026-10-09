@@ -776,36 +776,6 @@ class UISmokeTests(unittest.TestCase):
         self.assertEqual(len(self.server.posts), 1)
         self.server.delay = 0
 
-    def emit_undo(self, win, toast):
-        # Temporary diagnostics: report the undo decision on timeout.
-        calls = []
-        orig = win.undo_action
-
-        def spy(t, snap, plug, inverse, slot):
-            calls.append((snap, plug, inverse, slot))
-            try:
-                return orig(t, snap, plug, inverse, slot)
-            except Exception:
-                import traceback
-                traceback.print_exc()
-                raise
-        win.undo_action = spy
-        toast.emit("button-clicked")
-        end = GLib.get_monotonic_time() + 2000 * 1000
-        ctx = GLib.MainContext.default()
-        while len(self.server.posts) < 2 \
-                and GLib.get_monotonic_time() < end:
-            if not ctx.iteration(False):
-                time.sleep(0.01)
-        if len(self.server.posts) < 2:
-            row = self.switch_row(win, "camera")
-            raise AssertionError(
-                "undo produced no POST: handler_calls=%r busy=%r "
-                "last_toast=%r row=%r" % (
-                    calls, win.busy,
-                    win.last_toast.get_title() if win.last_toast else None,
-                    row.get_active() if row is not None else None))
-
     def test_undo_toast_sends_inverse(self):
         win = self.load_win()
         row = self.switch_row(win, "camera")
@@ -815,7 +785,8 @@ class UISmokeTests(unittest.TestCase):
         toast = win.last_toast
         self.assertIsNotNone(toast)
         self.assertIn("Disconnected camera", toast.get_title())
-        self.emit_undo(win, toast)
+        toast.emit("button-clicked")
+        self.run_until(lambda: len(self.server.posts) >= 2)
         path, body, allowed = self.server.posts[1]
         self.assertEqual(body["action"], "connect")
         self.assertEqual(body["plugs"][0]["plug"], "camera")
@@ -841,7 +812,8 @@ class UISmokeTests(unittest.TestCase):
         self.wait_change_finished(win)
         toast = win.last_toast
         self.assertIn("Disconnected camera", toast.get_title())
-        self.emit_undo(win, toast)
+        toast.emit("button-clicked")
+        self.run_until(lambda: len(self.server.posts) >= 2)
         path, body, allowed = self.server.posts[1]
         self.assertEqual(body["action"], "connect")
         self.assertEqual(body["slots"][0],
