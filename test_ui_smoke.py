@@ -19,6 +19,21 @@ SNAP_APP = {"name": "firefox", "type": "app", "version": "1.0",
             "summary": "Browse the web", "apps": [{"name": "firefox"}]}
 SNAP_BASE = {"name": "core24", "type": "base", "version": "2"}
 
+_SHARED = {}
+
+
+def shared_app():
+    """One Adw.Application per process: registering the same app id
+    twice fails, so all test classes share it."""
+    if "app" not in _SHARED:
+        import main
+        _SHARED["main"] = main
+        app = main.App()
+        app.connect("activate", lambda a: None)
+        app.register()
+        _SHARED["app"] = app
+    return _SHARED["main"], _SHARED["app"]
+
 CONNECTIONS = {
     "established": [
         {"slot": {"snap": "snapd", "slot": "camera"},
@@ -81,14 +96,7 @@ class UISmokeTests(unittest.TestCase):
         cls.tmpdir.cleanup()
 
     def setUp(self):
-        if self.main is None:
-            import main
-            self.__class__.main = main
-        if self.app is None:
-            app = self.main.App()
-            app.connect("activate", lambda a: None)
-            self.__class__.app = app
-            app.register()
+        self.main, self.app = shared_app()
         self.server.snaps = []
         self.server.posts = []
         self.server.responses = []
@@ -111,9 +119,6 @@ class UISmokeTests(unittest.TestCase):
             del os.environ["GINGER_DATA_DIR"]
         else:
             os.environ["GINGER_DATA_DIR"] = self.prev_data_dir
-
-    def tearDown(self):
-        self.win.destroy()
 
     def make_window(self):
         self.win.load()
@@ -958,17 +963,41 @@ class UISmokeTests(unittest.TestCase):
         self.assertTrue(self.switch_row(win, "camera").get_active())
 
 
-class PointerPickTests(UISmokeTests):
+class PointerPickTests(unittest.TestCase):
     """win.pick exercises pointer picking; emitting signals does not.
 
     A widget covering a pane (an overlay child) is picked before the
     content under it even when it draws nothing.
     """
 
+    @classmethod
+    def setUpClass(cls):
+        cls.main, cls.app = shared_app()
+        cls.tmpdir = tempfile.TemporaryDirectory()
+        cls.socket_path = os.path.join(cls.tmpdir.name, "snapd.socket")
+        cls.server = MockSnapd(cls.socket_path)
+        os.environ["SNAPD_SOCKET"] = cls.socket_path
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.stop()
+        cls.tmpdir.cleanup()
+
     def setUp(self):
-        super().setUp()
+        self.main, self.app = shared_app()
         self.server.snaps = [dict(SNAP_APP)]
         self.server.default_connections = CONNECTIONS
+        self.server.posts = []
+        self.server.responses = []
+        self.server.interface_responses = []
+        self.server.change_script = {}
+        self.server.next_change_id = 1
+        self.server.delay = 0
+        self.prev_data_dir = os.environ.get("GINGER_DATA_DIR")
+        self.tmpdir_i = tempfile.TemporaryDirectory()
+        os.environ["GINGER_DATA_DIR"] = self.tmpdir_i.name
+        self.win = self.main.Window(self.app)
+        self.win.present()
         self.win.load()
         self.win.on_snap_selected(self.win.snaps_list,
                                   self.win.snaps_list.get_row_at_index(0))
@@ -976,12 +1005,32 @@ class PointerPickTests(UISmokeTests):
                         and self.win.snaps_list.get_width() > 1
                         and self.win.detail_pane.get_width() > 1)
 
+    def tearDown(self):
+        self.win.destroy()
+        self.tmpdir_i.cleanup()
+        if self.prev_data_dir is None:
+            del os.environ["GINGER_DATA_DIR"]
+        else:
+            os.environ["GINGER_DATA_DIR"] = self.prev_data_dir
+
+    def run_until(self, condition, timeout_ms=3000):
+        ctx = GLib.MainContext.default()
+        end = GLib.get_monotonic_time() + timeout_ms * 1000
+        while not condition() and GLib.get_monotonic_time() < end:
+            if not ctx.iteration(False):
+                time.sleep(0.01)
+        self.assertTrue(condition(), "run_until timed out")
+
     def point_in(self, target):
         point = Graphene.Point()
         point.x = target.get_width() / 2
         point.y = min(target.get_height() / 2, 5)
-        out = target.compute_point(self.win, point)
-        self.assertIsNotNone(out, "compute_point failed")
+        result = target.compute_point(self.win, point)
+        if isinstance(result, tuple):
+            ok, out = result
+        else:
+            ok, out = True, result
+        self.assertTrue(ok, "compute_point failed")
         return out.x, out.y
 
     def pick(self, target):
