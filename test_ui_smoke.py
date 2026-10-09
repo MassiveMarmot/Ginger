@@ -958,44 +958,17 @@ class UISmokeTests(unittest.TestCase):
         self.assertTrue(self.switch_row(win, "camera").get_active())
 
 
-class PointerPickTests(unittest.TestCase):
+class PointerPickTests(UISmokeTests):
     """win.pick exercises pointer picking; emitting signals does not.
 
     A widget covering a pane (an overlay child) is picked before the
     content under it even when it draws nothing.
     """
 
-    @classmethod
-    def setUpClass(cls):
-        cls.tmpdir = tempfile.TemporaryDirectory()
-        cls.socket_path = os.path.join(cls.tmpdir.name, "snapd.socket")
-        cls.server = MockSnapd(cls.socket_path)
-        os.environ["SNAPD_SOCKET"] = cls.socket_path
-        cls.app = None
-        cls.main = None
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.server.stop()
-        cls.tmpdir.cleanup()
-
     def setUp(self):
-        if self.main is None:
-            import main
-            self.__class__.main = main
-        if self.app is None:
-            app = self.main.App()
-            app.connect("activate", lambda a: None)
-            self.__class__.app = app
-            app.register()
+        super().setUp()
         self.server.snaps = [dict(SNAP_APP)]
         self.server.default_connections = CONNECTIONS
-        self.server.posts = []
-        self.prev_data_dir = os.environ.get("GINGER_DATA_DIR")
-        self.tmpdir_i = tempfile.TemporaryDirectory()
-        os.environ["GINGER_DATA_DIR"] = self.tmpdir_i.name
-        self.win = self.main.Window(self.app)
-        self.win.present()
         self.win.load()
         self.win.on_snap_selected(self.win.snaps_list,
                                   self.win.snaps_list.get_row_at_index(0))
@@ -1003,33 +976,12 @@ class PointerPickTests(unittest.TestCase):
                         and self.win.snaps_list.get_width() > 1
                         and self.win.detail_pane.get_width() > 1)
 
-    def tearDown(self):
-        self.win.destroy()
-        self.tmpdir_i.cleanup()
-        if self.prev_data_dir is None:
-            del os.environ["GINGER_DATA_DIR"]
-        else:
-            os.environ["GINGER_DATA_DIR"] = self.prev_data_dir
-
-    def run_until(self, condition, timeout_ms=3000):
-        ctx = GLib.MainContext.default()
-        end = GLib.get_monotonic_time() + timeout_ms * 1000
-        while not condition() and GLib.get_monotonic_time() < end:
-            if not ctx.iteration(False):
-                time.sleep(0.01)
-        self.assertTrue(condition(), "run_until timed out")
-
     def point_in(self, target):
         point = Graphene.Point()
         point.x = target.get_width() / 2
         point.y = min(target.get_height() / 2, 5)
-        out = Graphene.Point()
-        result = target.compute_point(self.win, point, out)
-        if isinstance(result, tuple):
-            ok, out = result
-        else:
-            ok = result
-        self.assertTrue(ok, "compute_point failed")
+        out = target.compute_point(self.win, point)
+        self.assertIsNotNone(out, "compute_point failed")
         return out.x, out.y
 
     def pick(self, target):

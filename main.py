@@ -457,6 +457,7 @@ class Window(Adw.ApplicationWindow):
         if self.suppress_switch_handler:
             return
         plug = row.plug_info
+        snap_name = row.plug_snap
         action = "connect" if row.get_active() else "disconnect"
         if changes.needs_confirmation(action, plug["interface"],
                                       plug["tier"]):
