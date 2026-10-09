@@ -503,23 +503,23 @@ class Window(Adw.ApplicationWindow):
         spinner = Gtk.Spinner(spinning=True)
         row.add_suffix(spinner)
         row.change_spinner = spinner
-        slot_snap, slot = row.plug_slot
+        slot = row.plug_slot
         threading.Thread(
             target=self.change_worker,
-            args=(action, snap_name, plug["name"], slot_snap, slot),
+            args=(action, snap_name, plug["name"], slot),
             daemon=True).start()
 
-    def change_worker(self, action, snap_name, plug, slot_snap, slot):
+    def change_worker(self, action, snap_name, plug, slot):
         outcome, message = changes.run_change(
-            self.client, action, snap_name, plug, slot_snap, slot)
+            self.client, action, snap_name, plug, slot[0], slot[1])
         GLib.idle_add(self.change_done, action, snap_name, plug,
-                      outcome, message)
+                      slot, outcome, message)
 
-    def change_done(self, action, snap_name, plug, outcome, message):
+    def change_done(self, action, snap_name, plug, slot, outcome, message):
         self.busy = False
         self.load()
         if outcome == changes.OUTCOME_DONE:
-            self.show_undo_toast(action, snap_name, plug)
+            self.show_undo_toast(action, snap_name, plug, slot)
         elif outcome == changes.OUTCOME_CANCELLED:
             pass
         elif outcome == changes.OUTCOME_TIMEOUT:
@@ -541,31 +541,27 @@ class Window(Adw.ApplicationWindow):
             toast.set_title(GLib.markup_escape_text(title))
         return toast
 
-    def show_undo_toast(self, action, snap_name, plug):
+    def show_undo_toast(self, action, snap_name, plug, slot):
         inverse = "disconnect" if action == "connect" else "connect"
         verb = "Connected" if action == "connect" else "Disconnected"
         toast = self.make_toast("%s %s" % (verb, plug))
-        if hasattr(toast, "add_button"):
-            toast.add_button("Undo", "undo")
-        else:
-            toast.set_button_label("Undo")
+        toast.set_button_label("Undo")
         toast.connect("button-clicked", lambda t: self.undo_action(
-            t, snap_name, plug, inverse))
+            t, snap_name, plug, inverse, slot))
         self.last_toast = toast
         self.toast_overlay.add_toast(toast)
 
-    def undo_action(self, toast, snap_name, plug, inverse):
+    def undo_action(self, toast, snap_name, plug, inverse, slot):
         toast.dismiss()
+        row = self.find_plug_row(snap_name, plug)
         connections = self.connections_by_snap.get(snap_name) or {}
         plugs = interfaces.derive_plugs(connections, snap_name,
                                         show_all=True)
         info = next((p for p in plugs if p["name"] == plug), None)
-        row = self.find_plug_row(snap_name, plug)
-        if info is None or row is None:
-            return
-        slot = info["conn_slot"] if inverse == "disconnect" \
-            else info["slot"]
-        if inverse == "connect" and (slot is None or info["tier"] == 3):
+        if row is None or info is None or slot is None \
+                or (inverse == "connect" and info["tier"] == 3):
+            self.last_toast = self.make_toast("Couldn't undo")
+            self.toast_overlay.add_toast(self.last_toast)
             return
         row.plug_slot = slot
         self.set_switch_active(row, inverse == "connect")

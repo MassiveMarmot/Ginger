@@ -785,15 +785,39 @@ class UISmokeTests(unittest.TestCase):
         toast = win.last_toast
         self.assertIsNotNone(toast)
         self.assertIn("Disconnected camera", toast.get_title())
-        if hasattr(toast, "add_button"):
-            toast.emit("clicked", "undo")
-        else:
-            toast.emit("button-clicked")
+        toast.emit("button-clicked")
         self.run_until(lambda: len(self.server.posts) >= 2)
         path, body, allowed = self.server.posts[1]
         self.assertEqual(body["action"], "connect")
         self.assertEqual(body["plugs"][0]["plug"], "camera")
+        self.assertEqual(body["slots"][0]["slot"], "camera")
         self.run_until(lambda: win.busy is False)
+
+    def test_undo_reconnects_to_original_slot(self):
+        # A plug connected to one of several compatible slots must undo
+        # back to that same slot, not silently do nothing.
+        conns = dict(CONNECTIONS)
+        conns["slots"] = list(CONNECTIONS["slots"]) + [
+            {"snap": "slot-provider", "slot": "camera",
+             "interface": "camera", "connections": []}]
+        conns["established"] = [
+            {"slot": {"snap": "slot-provider", "slot": "camera"},
+             "plug": {"snap": "firefox", "plug": "camera"},
+             "interface": "camera", "manual": True}]
+        win = self.load_win(connections=conns)
+        row = self.switch_row(win, "camera")
+        self.assertTrue(row.get_active())
+        self.toggle_switch(row)
+        self.confirm_alert("Disconnect", "confirm")
+        self.wait_change_finished(win)
+        toast = win.last_toast
+        self.assertIn("Disconnected camera", toast.get_title())
+        toast.emit("button-clicked")
+        self.run_until(lambda: len(self.server.posts) >= 2)
+        path, body, allowed = self.server.posts[1]
+        self.assertEqual(body["action"], "connect")
+        self.assertEqual(body["slots"][0],
+                         {"snap": "slot-provider", "slot": "camera"})
 
 
 class PackagingTests(unittest.TestCase):
