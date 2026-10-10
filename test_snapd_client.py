@@ -73,6 +73,26 @@ class MockSnapd:
                     body += chunk
                 self._handle(conn, method, path, body, headers)
 
+    def apply_interface_change(self, parsed):
+        """Apply a connect or disconnect to default_connections so
+        a sequence of steps converges like real snapd."""
+        action = parsed.get("action")
+        conns = self.default_connections
+        plug = (parsed.get("plugs") or [{}])[0]
+        slot = (parsed.get("slots") or [{}])[0]
+        key = {"plug": {"snap": plug.get("snap"), "plug": plug.get("plug")},
+               "slot": {"snap": slot.get("snap"), "slot": slot.get("slot")}}
+        established = [e for e in conns.get("established", [])
+                       if (e.get("plug") or {}).get("plug")
+                       != plug.get("plug")]
+        if action == "connect":
+            interface = next(
+                (p.get("interface") for p in conns.get("plugs", [])
+                 if p.get("plug") == plug.get("plug")), plug.get("plug"))
+            established.append({**key, "interface": interface,
+                                "manual": True})
+        conns["established"] = established
+
     def _handle(self, conn, method, path, body, headers):
         self.requests.append((method, path))
         if self.delay and method == "POST" and path == "/v2/interfaces":
@@ -92,6 +112,9 @@ class MockSnapd:
             parsed = json.loads(body)
             self.posts.append((path, parsed,
                                headers.get("x-allow-interaction") == "true"))
+            if not self.interface_responses \
+                    and headers.get("x-allow-interaction") == "true":
+                self.apply_interface_change(parsed)
             if self.interface_responses:
                 status, payload = self.interface_responses.pop(0)
             elif headers.get("x-allow-interaction") != "true":
