@@ -5,6 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import changes  # noqa: E402
 import restore  # noqa: E402
 
 
@@ -194,6 +195,104 @@ class ChangedSnapsTests(unittest.TestCase):
             "slots": [slot_entry("camera")]}
         baselines = {"firefox": baseline(("camera", "snapd", "camera"))}
         self.assertEqual(restore.changed_snaps(baselines, connections), {})
+
+
+class EndToEndTests(unittest.TestCase):
+    """Restore converges against the mock server: the mock applies each
+    connect, and the diff recomputed after the batch is empty."""
+
+    def setUp(self):
+        import tempfile
+        from test_snapd_client import MockSnapd
+        from snapd_client import Client
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.server = MockSnapd(
+            os.path.join(self.tmpdir.name, "snapd.socket"))
+        self.client = Client(socket_path=self.server.socket_path)
+        self.addCleanup(self.tmpdir.cleanup)
+
+    def connections(self, established, plugs, slots):
+        return {"established": list(established), "undesired": [],
+                "plugs": list(plugs), "slots": list(slots)}
+
+    def run_batch(self, snaps, baselines):
+        steps = []
+        for snap in snaps:
+            steps.extend(restore.compute_diff(
+                baselines[snap], self.server.default_connections,
+                snap)["steps"])
+        for step in steps:
+            outcome, _ = changes.run_change(
+                self.client, step["action"], step["plug_snap"],
+                step["plug"], step["slot_snap"], step["slot"])
+            self.assertEqual(outcome, changes.OUTCOME_DONE)
+        return steps
+
+    def test_restore_one_snap_converges(self):
+        self.server.default_connections = self.connections(
+            [conn("removable-media", manual=True)],
+            [plug_entry("camera"),
+             plug_entry("removable-media", interface="removable-media")],
+            [slot_entry("camera"), slot_entry("removable-media")])
+        baselines = {"firefox": baseline(
+            ("camera", "snapd", "camera"))}
+        steps = self.run_batch(["firefox"], baselines)
+        self.assertEqual(sorted((s["action"], s["plug"]) for s in steps),
+                         [("connect", "camera"),
+                          ("disconnect", "removable-media")])
+        # The most valuable check: the diff is now empty.
+        for snap in baselines:
+            diff = restore.compute_diff(
+                baselines[snap], self.server.default_connections, snap)
+            self.assertEqual(diff["steps"], [])
+        self.assertEqual(restore.changed_snaps(
+            baselines, self.server.default_connections), {})
+
+    def test_restore_all_snaps_converges(self):
+        self.server.default_connections = self.connections(
+            [conn("camera", snap="firefox", manual=True),
+             conn("audio-record", snap="thunderbird", manual=True)],
+            [plug_entry("camera"),
+             plug_entry("audio-record", snap="thunderbird",
+                        interface="audio-record")],
+            [slot_entry("camera"), slot_entry("audio-record")])
+        baselines = {
+            "firefox": baseline(),
+            "thunderbird": baseline(),
+        }
+        changed = restore.changed_snaps(
+            baselines, self.server.default_connections)
+        self.assertEqual(sorted(changed), ["firefox", "thunderbird"])
+        self.run_batch(sorted(changed), baselines)
+        for snap in baselines:
+            diff = restore.compute_diff(
+                baselines[snap], self.server.default_connections, snap)
+            self.assertEqual(diff["steps"], [])
+
+    def test_rerun_after_partial_restore_finishes_rest(self):
+        # Two steps; the first succeeds, the second is refused. A
+        # re-run of the diff sends only what is left.
+        self.server.default_connections = self.connections(
+            [],
+            [plug_entry("camera"),
+             plug_entry("removable-media", interface="removable-media")],
+            [slot_entry("camera"), slot_entry("removable-media")])
+        baselines = {"firefox": baseline(
+            ("camera", "snapd", "camera"),
+            ("removable-media", "snapd", "removable-media"))}
+        steps = restore.compute_diff(
+            baselines["firefox"], self.server.default_connections,
+            "firefox")["steps"]
+        self.assertEqual(len(steps), 2)
+        outcome, _ = changes.run_change(
+            self.client, steps[0]["action"], steps[0]["plug_snap"],
+            steps[0]["plug"], steps[0]["slot_snap"], steps[0]["slot"])
+        self.assertEqual(outcome, changes.OUTCOME_DONE)
+        remaining = restore.compute_diff(
+            baselines["firefox"], self.server.default_connections,
+            "firefox")["steps"]
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["plug"], "removable-media")
 
 
 if __name__ == "__main__":
