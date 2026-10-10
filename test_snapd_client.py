@@ -8,6 +8,7 @@ import time
 import unittest
 import urllib.parse
 
+import snapd_client
 from snapd_client import Client, SnapdError, MUTATION_TIMEOUT
 
 
@@ -17,6 +18,7 @@ class MockSnapd:
     def __init__(self, socket_path):
         self.socket_path = socket_path
         self.snaps = []
+        self.requests = []  # (method, path) in order
         self.connections = {}  # snap name -> connections result dict
         self.default_connections = {"established": [], "undesired": [],
                                    "plugs": [], "slots": []}
@@ -72,6 +74,7 @@ class MockSnapd:
                 self._handle(conn, method, path, body, headers)
 
     def _handle(self, conn, method, path, body, headers):
+        self.requests.append((method, path))
         if self.delay and method == "POST" and path == "/v2/interfaces":
             time.sleep(self.delay)
         if self.responses:
@@ -405,6 +408,65 @@ class FakeClock:
     def monotonic(self):
         self.now += self.step
         return self.now
+
+
+class AllowlistTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.socket_path = os.path.join(self.tmpdir.name, "snapd.socket")
+        self.server = MockSnapd(self.socket_path)
+        self.client = Client(socket_path=self.socket_path)
+
+    def tearDown(self):
+        self.server.stop()
+        self.tmpdir.cleanup()
+
+    def assert_denied(self, method, path):
+        with self.assertRaises(SnapdError) as cm:
+            self.client._request(method, path)
+        self.assertEqual(cm.exception.kind, "not-allowed")
+
+    def test_allowed_calls_pass(self):
+        cases = [
+            ("GET", "/v2/snaps"),
+            ("GET", "/v2/connections"),
+            ("GET", "/v2/connections?snap=firefox&select=all"),
+            ("POST", "/v2/interfaces"),
+            ("GET", "/v2/changes/25"),
+            ("GET", "/v2/changes/abc-DEF-12"),
+        ]
+        for method, path in cases:
+            with self.subTest(method=method, path=path):
+                self.assertIsNone(snapd_client.check_allowed(method, path))
+
+    def test_denied_calls_raise_without_connecting(self):
+        cases = [
+            ("DELETE", "/v2/snaps"),
+            ("PUT", "/v2/connections"),
+            ("POST", "/v2/snaps"),
+            ("GET", "/v2/snaps/foo"),
+            ("GET", "/v2/changes/"),
+            ("GET", "/v2/changes/a/b"),
+            ("GET", "/v2/changes/../../etc"),
+            ("GET", "/v2/change/25"),
+            ("GET", "/v2/interfaces"),
+            ("GET", "/v2/system-info"),
+            ("GET", "/v2/apps"),
+            ("POST", "/v2/interfaces/requests"),
+            ("GET", "v2/snaps"),
+            ("GET", "/v2/connections%3Fselect%3Dall"),
+            ("GET", "/run/snapd.socket"),
+            ("GET", "/v2/changes/ok;rm-rf"),
+            ("GET", "/v2/changes/ok id"),
+        ]
+        for method, path in cases:
+            with self.subTest(method=method, path=path):
+                self.assert_denied(method, path)
+                self.assertEqual(self.server.requests, [])
+
+    def test_allowed_methods_only_on_exact_paths(self):
+        self.assert_denied("GET", "/v2/connectionsx")
+        self.assert_denied("GET", "/V2/SNAPS")
 
 
 if __name__ == "__main__":
