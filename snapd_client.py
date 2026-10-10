@@ -2,6 +2,7 @@
 import http.client
 import json
 import os
+import re
 import socket
 import time
 import urllib.parse
@@ -12,6 +13,24 @@ POLL_INTERVAL_START = 0.5
 POLL_INTERVAL_MAX = 2.0
 POLL_TIMEOUT = 60.0
 MUTATION_TIMEOUT = 120
+
+ALLOWED_CALLS = (
+    ("GET", "/v2/snaps"),
+    ("GET", "/v2/connections"),
+    ("POST", "/v2/interfaces"),
+)
+CHANGE_ID_RE = re.compile(r"[A-Za-z0-9-]+")
+
+
+def check_allowed(method, path):
+    path = path.split("?", 1)[0]
+    if (method, path) in ALLOWED_CALLS:
+        return
+    if method == "GET" and path.startswith("/v2/changes/") \
+            and re.fullmatch(CHANGE_ID_RE, path[len("/v2/changes/"):]):
+        return
+    raise SnapdError("call not allowed: %s %s" % (method, path),
+                     kind="not-allowed")
 
 
 class SnapdError(Exception):
@@ -45,6 +64,7 @@ class Client:
 
     def _request(self, method, path, body=None, allow_interaction=False,
                  timeout=10):
+        check_allowed(method, path)
         data = json.dumps(body).encode() if body is not None else None
         headers = {"Content-Type": "application/json"}
         if allow_interaction:
