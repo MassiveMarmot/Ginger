@@ -430,7 +430,7 @@ class AllowlistTests(unittest.TestCase):
         cases = [
             ("GET", "/v2/snaps"),
             ("GET", "/v2/connections"),
-            ("GET", "/v2/connections?snap=firefox&select=all"),
+            ("GET", "/v2/connections?snap=a&select=all"),
             ("POST", "/v2/interfaces"),
             ("GET", "/v2/changes/25"),
             ("GET", "/v2/changes/abc-DEF-12"),
@@ -458,6 +458,9 @@ class AllowlistTests(unittest.TestCase):
             ("GET", "/run/snapd.socket"),
             ("GET", "/v2/changes/ok;rm-rf"),
             ("GET", "/v2/changes/ok id"),
+            ("POST", "/v2/interfaces?x=1"),
+            ("GET", "/v2/changes/25?x=1"),
+            ("GET", "/v2/snaps?x=1"),
         ]
         for method, path in cases:
             with self.subTest(method=method, path=path):
