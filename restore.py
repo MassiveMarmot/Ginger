@@ -84,7 +84,8 @@ def compute_diff(baseline_entry, current_connections, snap_name):
                 steps.append({"action": "disconnect",
                               "plug_snap": snap_name, "plug": plug,
                               "slot_snap": key[1], "slot": key[2],
-                              "tier": 1})
+                              "tier": interfaces.tier_for(
+                                  str(c.get("interface") or "?"))})
                 if _slot_exists(current_connections, slot_snap, slot):
                     interface = _interface_of(current_connections,
                                               snap_name, plug)
@@ -104,7 +105,8 @@ def compute_diff(baseline_entry, current_connections, snap_name):
         if not in_baseline and c.get("manual"):
             steps.append({"action": "disconnect", "plug_snap": snap_name,
                           "plug": plug, "slot_snap": key[1], "slot": key[2],
-                          "tier": 1})
+                          "tier": interfaces.tier_for(
+                              str(c.get("interface") or "?"))})
     return {"steps": steps, "skipped": skipped, "not_restored": not_restored}
 
 
