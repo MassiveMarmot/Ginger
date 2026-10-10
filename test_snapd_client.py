@@ -71,7 +71,10 @@ class MockSnapd:
                     if not chunk:
                         break
                     body += chunk
-                self._handle(conn, method, path, body, headers)
+                try:
+                    self._handle(conn, method, path, body, headers)
+                except BrokenPipeError:
+                    pass
 
     def apply_interface_change(self, parsed):
         """Apply a connect or disconnect to default_connections so
