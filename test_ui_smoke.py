@@ -13,6 +13,8 @@ from test_snapd_client import MockSnapd  # noqa: E402
 
 import snapd_client  # noqa: E402
 import changes  # noqa: E402
+import gi  # noqa: E402
+gi.require_version("Adw", "1")  # noqa: E402
 
 from gi.repository import Adw, GLib, Graphene, Gtk, Pango  # noqa: E402
 

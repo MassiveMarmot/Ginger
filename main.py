@@ -700,7 +700,10 @@ class App(Adw.Application):
 
 
 def main():
-    App().run(sys.argv)
+    try:
+        App().run(sys.argv)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":
