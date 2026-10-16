@@ -1079,6 +1079,16 @@ class RestoreTests(UISmokeTests):
         win.load()
         self.assertEqual(self.row_texts(win), [])
 
+    def test_refresh_keeps_restore_page_selected(self):
+        win = self.base_conns_with_baseline(self.changed_connections())
+        win.open_restore_page()
+        self.assertEqual(win.page_stack.get_visible_child_name(), "restore")
+        win.activate_action("win.refresh", None)
+        self.assertEqual(win.page_stack.get_visible_child_name(), "restore")
+        # Sidebar selection and visible page stay in sync.
+        selected = win.sidebar_rows.get_selected_row()
+        self.assertEqual(selected.get_title(), "Restore")
+
     def test_restore_page_rows_and_buttons(self):
         win = self.base_conns_with_baseline(self.changed_connections())
         win.open_restore_page()

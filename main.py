@@ -901,7 +901,8 @@ class Window(Adw.ApplicationWindow):
             self.selected_snap = None
         if self.search_entry.get_text() != self.query:
             self.search_entry.set_text(self.query)
-        self.page_stack.set_visible_child_name("snaps")
+        if self.page_stack.get_visible_child_name() == "error":
+            self.page_stack.set_visible_child_name("snaps")
         self.refresh_list()
         if self.selected_snap is None:
             first = self.snaps_list.get_row_at_index(0)
