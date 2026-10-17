@@ -28,6 +28,7 @@ class MockSnapd:
         self.change_script = {}  # change id -> [result dicts], consumed per poll
         self.next_change_id = 1
         self.delay = 0  # seconds to sleep before answering POST /v2/interfaces
+        self.converge = False  # apply accepted POSTs to default_connections
         self.running = True
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(socket_path)
@@ -78,7 +79,8 @@ class MockSnapd:
 
     def apply_interface_change(self, parsed):
         """Apply a connect or disconnect to default_connections so
-        a sequence of steps converges like real snapd."""
+        a sequence of steps converges like real snapd. Opt-in: only
+        runs when self.converge is True."""
         action = parsed.get("action")
         conns = self.default_connections
         plug = (parsed.get("plugs") or [{}])[0]
@@ -117,7 +119,8 @@ class MockSnapd:
                                headers.get("x-allow-interaction") == "true"))
             if not self.interface_responses \
                     and headers.get("x-allow-interaction") == "true":
-                self.apply_interface_change(parsed)
+                if self.converge:
+                    self.apply_interface_change(parsed)
             if self.interface_responses:
                 status, payload = self.interface_responses.pop(0)
             elif headers.get("x-allow-interaction") != "true":

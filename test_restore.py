@@ -279,6 +279,7 @@ class EndToEndTests(unittest.TestCase):
         self.server = MockSnapd(
             os.path.join(self.tmpdir.name, "snapd.socket"))
         self.client = Client(socket_path=self.server.socket_path)
+        self.server.converge = True
         self.addCleanup(self.tmpdir.cleanup)
 
     def connections(self, established, plugs, slots):
