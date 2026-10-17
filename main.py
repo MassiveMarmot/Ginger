@@ -355,13 +355,8 @@ class Window(Adw.ApplicationWindow):
     def changed_snaps(self):
         if self.baseline_problem is not None:
             return {}
-        changed = {}
-        for snap, entry in self.baselines.items():
-            diff = restore.compute_diff(
-                entry, self.connections_by_snap.get(snap) or {}, snap)
-            if diff["steps"] or diff["not_restored"]:
-                changed[snap] = len(diff["steps"])
-        return changed
+        return restore.changed_snaps(
+            self.baselines, self.connections_by_snap)
 
     def on_restore_selected(self):
         snaps = sorted(snap for snap, check in self.restore_checks.items()
@@ -773,7 +768,7 @@ class Window(Adw.ApplicationWindow):
             outcome, message = changes.run_change(
                 self.client, action, snap_name, plug, slot[0], slot[1],
                 baseline_entry=baseline_entry, current_connections=conns)
-        except changes.Tier3NotAuthorized as e:
+        except (changes.Tier3NotAuthorized, changes.NoBaseline) as e:
             outcome, message = changes.OUTCOME_ERROR, str(e)
         GLib.idle_add(self.change_done, action, snap_name, plug,
                       slot, outcome, message)

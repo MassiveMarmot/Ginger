@@ -160,13 +160,14 @@ def is_changed(baseline_entry, current_connections, snap_name):
     return bool(diff["steps"]) or bool(diff["not_restored"])
 
 
-def changed_snaps(baselines, connections):
+def changed_snaps(baselines, connections_by_snap):
     """{snap: step count} for snaps whose diff has steps or
     not-restored entries (step count for the dialog, presence for
-    every 'changed' signal)."""
+    every 'changed' signal). connections_by_snap is the per-snap map."""
     changed = {}
     for snap, entry in baselines.items():
-        diff = compute_diff(entry, connections, snap)
-        if diff["steps"] or diff["not_restored"]:
+        if is_changed(entry, connections_by_snap.get(snap) or {}, snap):
+            diff = compute_diff(entry,
+                                connections_by_snap.get(snap) or {}, snap)
             changed[snap] = len(diff["steps"])
     return changed

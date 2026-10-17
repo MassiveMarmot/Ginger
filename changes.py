@@ -21,6 +21,10 @@ class Tier3NotAuthorized(Exception):
     """A connect not authorized: tier 3 without a matching baseline
     entry, or a plug whose interface cannot be resolved."""
 
+
+class NoBaseline(Exception):
+    """A mutation for a snap that has no saved baseline entry."""
+
 OUTCOME_DONE = "done"
 OUTCOME_CANCELLED = "auth_cancelled"
 OUTCOME_TIMEOUT = "request_timeout"
@@ -77,8 +81,12 @@ def run_change(client, action, plug_snap, plug, slot_snap, slot,
     interface is resolved here from current_connections. A connect
     with an unresolved interface is refused. A tier 3 connect is
     authorized only by restore.may_reconnect_tier3 against
-    baseline_entry; nothing is sent otherwise.
+    baseline_entry; nothing is sent otherwise. Any mutation without a
+    baseline entry is refused: Ginger changes a snap only when the
+    saved original state exists.
     """
+    if baseline_entry is None:
+        raise NoBaseline("no saved original state for %s" % plug_snap)
     if action == "connect":
         interface = restore._interface_of(current_connections or {},
                                           plug_snap, plug)

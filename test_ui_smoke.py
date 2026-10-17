@@ -1481,7 +1481,106 @@ class RestoreTests(GingerTestBase):
             self.assertTrue(widget is target or widget.is_ancestor(target),
                             "picked %s, expected %s" % (widget, target))
 
+    def tier3_win(self, baseline_entry):
+        """Window whose docker-support plug (tier 3) is disconnected
+        and has a slot; baseline_entry is written for firefox."""
+        conns = copy.deepcopy(CONNECTIONS)
+        conns["slots"] = list(conns["slots"]) + [
+            {"snap": "snapd", "slot": "docker-support",
+             "interface": "docker-support", "connections": []}]
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = conns
+        self.write_baseline("firefox", baseline_entry)
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list,
+                             win.snaps_list.get_row_at_index(0))
+        return win
+
+    def tier3_baseline_entry(self):
+        entry = self.baseline_for(CONNECTIONS)
+        entry["connected"].append({
+            "plug": "docker-support", "slot_snap": "snapd",
+            "slot": "docker-support", "interface": "docker-support"})
+        return entry
+
+    def test_restore_reconnects_authorized_tier3(self):
+        # In the baseline (with interface), now disconnected: Restore
+        # sends the connect after the strong-warning dialog, counted in
+        # the approval total.
+        win = self.tier3_win(self.tier3_baseline_entry())
+        win.open_restore_page()
+        win.restore_all_button.emit("clicked")
+        alert = self.restore_alert(win)
+        body = alert.get_body()
+        self.assertIn("Connect firefox:docker-support", body)
+        self.assertIn("privileged interface: grants broad system "
+                       "access", body)
+        self.assertIn("This will ask for approval 1 times.", body)
+        alert.emit("response", "restore")
+        self.run_until(lambda: win.restore_batch is None
+                       and win.busy is False)
+        self.assertEqual(len(self.server.posts), 1)
+        path, posted, allowed = self.server.posts[0]
+        self.assertEqual(posted["action"], "connect")
+        self.assertEqual(posted["plugs"][0]["plug"], "docker-support")
+        self.assertTrue(allowed)
+
+    def test_restore_never_connects_unauthorized_tier3(self):
+        # In the baseline but without the stored interface (old file):
+        # Not restored, nothing sent, even though the plug and slot
+        # exist. A plug absent from the baseline produces no diff at
+        # all, so Restore never even offers it.
+        entry = self.baseline_for(CONNECTIONS)
+        entry["connected"].append({
+            "plug": "docker-support", "slot_snap": "snapd",
+            "slot": "docker-support"})
+        win = self.tier3_win(entry)
+        win.open_restore_page()
+        win.restore_all_button.emit("clicked")
+        alert = self.restore_alert(win)
+        self.assertIn("Not restored by Ginger", alert.get_body())
+        self.assertNotIn("ask for approval", alert.get_body())
+        alert.emit("response", "ok")
+        self.assertIsNone(win.restore_batch)
+        self.assertEqual(self.server.posts, [])
+
+    def test_switch_insensitive_for_tier3_even_when_in_baseline(self):
+        win = self.tier3_win(self.tier3_baseline_entry())
+        row = self.switch_row(win, "docker-support")
+        self.assertFalse(row.get_active())
+        self.assertFalse(row.get_sensitive())
+        self.assertIn("Connect not offered", row.get_subtitle())
+
+    def test_tier3_disconnect_still_works(self):
+        # A connected tier 3 plug can be disconnected; the reconnect
+        # through Undo is refused (no baseline entry).
+        conns = copy.deepcopy(CONNECTIONS)
+        conns["slots"] = list(conns["slots"]) + [
+            {"snap": "snapd", "slot": "docker-support",
+             "interface": "docker-support", "connections": []}]
+        conns["established"].append({
+            "slot": {"snap": "snapd", "slot": "docker-support"},
+            "plug": {"snap": "firefox", "plug": "docker-support"},
+            "interface": "docker-support", "manual": True})
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = conns
+        self.write_baseline("firefox", self.baseline_for(CONNECTIONS))
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list,
+                             win.snaps_list.get_row_at_index(0))
+        row = self.switch_row(win, "docker-support")
+        self.assertTrue(row.get_active())
+        self.toggle_switch(row)
+        self.confirm_alert("Disconnect", "confirm")
+        self.wait_change_finished(win)
+        self.assertEqual(len(self.server.posts), 1)
+        self.assertEqual(self.server.posts[0][1]["action"],
+                         "disconnect")
+        self.assertNotEqual(win.last_toast.get_button_label(), "Undo")
+
     def test_tier3_step_never_sent(self):
+        # Belt and braces: an unauthorized tier 3 step injected into a
+        # batch aborts it, nothing sent.
         win = self.base_conns_with_baseline(self.changed_connections())
         win.restore_batch = {"snaps": ["firefox"], "steps": [
             {"action": "connect", "plug_snap": "firefox",
@@ -1491,8 +1590,110 @@ class RestoreTests(GingerTestBase):
         self.assertIsNone(win.restore_batch)
         self.assertFalse(win.busy)
         self.assertEqual(self.server.posts, [])
-        self.assertIn("never connects",
+        self.assertIn("not authorized",
                       win.last_toast.get_title())
+
+    def test_only_tier3_difference_counts_as_changed(self):
+        # A snap whose only difference is a tier 3 plug whose
+        # authorization fails (old baseline entry, no stored interface)
+        # still shows banner, icon, Restore page row; the dialog has no
+        # steps and no approval line; nothing sent.
+        entry = self.baseline_for(CONNECTIONS)
+        entry["connected"].append({
+            "plug": "docker-support", "slot_snap": "snapd",
+            "slot": "docker-support"})
+        win = self.tier3_win(entry)
+        titles = [r.get_title() for r in
+                  self.walk(win.detail_bin.get_child())
+                  if isinstance(r, Adw.ActionRow)]
+        self.assertIn("This snap differs from its original state",
+                      titles)
+        rows = [r for r in win.walk(win.snaps_list)
+                if isinstance(r, Adw.ActionRow)]
+        self.assertEqual([r.get_title() for r in rows], ["firefox"])
+        icons = [s for s in win.walk(rows[0])
+                  if isinstance(s, Gtk.Image)
+                  and s.get_icon_name() == "document-modified-symbolic"]
+        self.assertEqual(len(icons), 1)
+        win.open_restore_page()
+        restore_rows = [r for r in win.walk(win.restore_rows)
+                        if isinstance(r, Adw.ActionRow)]
+        self.assertIn("firefox", [r.get_title()
+                                  for r in restore_rows])
+        win.restore_all_button.emit("clicked")
+        alert = self.restore_alert(win)
+        body = alert.get_body()
+        self.assertNotIn("ask for approval", body)
+        self.assertIn("Not restored by Ginger", body)
+        alert.emit("response", "ok")
+        self.assertIsNone(win.restore_batch)
+        self.assertEqual(self.server.posts, [])
+
+    def tier3_batch_win(self):
+        """Window whose baseline authorizes a tier 3 reconnect; the
+        restore batch is exactly one connect step."""
+        win = self.tier3_win(self.tier3_baseline_entry())
+        win.open_restore_page()
+        win.restore_all_button.emit("clicked")
+        alert = self.restore_alert(win)
+        return win, alert
+
+    def test_tier3_auth_cancelled_stops_batch_silently(self):
+        win, alert = self.tier3_batch_win()
+        self.server.interface_responses = [
+            (403, {"type": "error", "status-code": 403,
+                   "result": {"message": "cancelled",
+                              "kind": "auth-cancelled"}})]
+        toast_before = win.last_toast
+        alert.emit("response", "restore")
+        self.run_until(lambda: win.restore_batch is None
+                       and win.busy is False)
+        self.assertEqual(len(self.server.posts), 1)
+        self.assertIs(win.last_toast, toast_before)
+
+    def test_tier3_error_mid_batch_reports_count(self):
+        win, alert = self.tier3_batch_win()
+        self.server.change_script["1"] = [
+            {"status": "Doing", "ready": False, "err": None},
+            {"status": "Error", "ready": True,
+             "err": "snapd refused", "summary": "failed"}]
+        alert.emit("response", "restore")
+        self.run_until(lambda: win.restore_batch is None)
+        self.assertEqual(len(self.server.posts), 1)
+        self.assertIn("Stopped after 0 of 1 steps",
+                      win.last_toast.get_title())
+        self.assertIn("snapd refused", win.last_toast.get_title())
+
+    def test_tier3_markup_names_render_literally(self):
+        plug = "<b>x</b>&amp;"
+        entry = self.baseline_for(CONNECTIONS)
+        entry["connected"].append({
+            "plug": plug, "slot_snap": "snapd", "slot": "docker-support",
+            "interface": "docker-support"})
+        conns = copy.deepcopy(CONNECTIONS)
+        conns["plugs"].append({"snap": "firefox", "plug": plug,
+                               "interface": "docker-support",
+                               "apps": [], "connections": []})
+        conns["slots"].append({"snap": "snapd", "slot": "docker-support",
+                               "interface": "docker-support",
+                               "connections": []})
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = conns
+        self.write_baseline("firefox", entry)
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list,
+                             win.snaps_list.get_row_at_index(0))
+        win.open_restore_page()
+        win.restore_all_button.emit("clicked")
+        alert = self.restore_alert(win)
+        self.assertIn(plug, alert.get_body())
+        self.assertFalse(alert.get_body_use_markup())
+        alert.emit("response", "restore")
+        self.run_until(lambda: win.restore_batch is None
+                       and win.busy is False)
+        self.assertEqual(len(self.server.posts), 1)
+        self.assertEqual(self.server.posts[0][1]["plugs"][0]["plug"],
+                         plug)
 
     def test_second_confirm_restore_blocked_while_dialog_open(self):
         win = self.base_conns_with_baseline(self.changed_connections())

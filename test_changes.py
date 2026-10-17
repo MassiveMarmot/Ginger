@@ -55,11 +55,18 @@ class ConfirmationTests(unittest.TestCase):
                                          "removable-media", 2)
         self.assertIn("<b>evil</b>&amp;", body)
 
-    def test_connect_body_has_no_tier3_line(self):
-        self.assertNotIn("Ginger never connects",
-                         changes.confirmation_body(
-                             "connect", "docker-support",
-                             "docker-support", 3))
+    def test_connect_body_has_tier3_strong_warning(self):
+        body = changes.confirmation_body(
+            "connect", "docker-support", "docker-support", 3)
+        self.assertIn(changes.TIER3_WARNING, body)
+        self.assertNotIn(changes.GENERIC_TIER2_WARNING, body)
+        self.assertNotIn("sensitive", body)
+
+    def test_tier2_body_keeps_tier2_warning(self):
+        body = changes.confirmation_body(
+            "connect", "ssh-keys", "ssh-keys", 2)
+        self.assertIn(changes.GENERIC_TIER2_WARNING, body)
+        self.assertNotIn(changes.TIER3_WARNING, body)
 
     def test_disconnected_markup_in_plug_name_stays_plain(self):
         body = changes.confirmation_body("disconnect", "<b>evil</b>&amp;",
@@ -75,6 +82,9 @@ class RunChangeTests(unittest.TestCase):
                         "connections": []}],
              "slots": [{"snap": "snapd", "slot": "camera",
                         "interface": "camera", "connections": []}]}
+    BASELINE = {"connected": [{"plug": "camera", "slot_snap": "snapd",
+                               "slot": "camera",
+                               "interface": "camera"}]}
 
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -92,6 +102,7 @@ class RunChangeTests(unittest.TestCase):
              "summary": "done"}]
         outcome, message = changes.run_change(
             self.client, "connect", "firefox", "camera", "snapd", "camera",
+            baseline_entry=self.BASELINE,
             current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_DONE)
         self.assertIsNone(message)
@@ -106,6 +117,7 @@ class RunChangeTests(unittest.TestCase):
              "summary": "failed"}]
         outcome, message = changes.run_change(
             self.client, "connect", "firefox", "camera", "snapd", "camera",
+            baseline_entry=self.BASELINE,
             current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_ERROR)
         self.assertIn("cannot connect", message)
@@ -117,7 +129,7 @@ class RunChangeTests(unittest.TestCase):
                        "kind": "auth-cancelled"}}))
         outcome, message = changes.run_change(
             self.client, "disconnect", "firefox", "camera", "snapd",
-            "camera")
+            "camera", baseline_entry=self.BASELINE)
         self.assertEqual(outcome, changes.OUTCOME_CANCELLED)
         self.assertIsNone(message)
 
@@ -128,6 +140,7 @@ class RunChangeTests(unittest.TestCase):
                        "kind": "login-required"}}))
         outcome, message = changes.run_change(
             self.client, "connect", "firefox", "camera", "snapd", "camera",
+            baseline_entry=self.BASELINE,
             current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_ERROR)
         self.assertIn("access denied", message)
@@ -150,6 +163,7 @@ class RunChangeTests(unittest.TestCase):
         self.flaky_get_change("request-timeout")
         outcome, message = changes.run_change(
             self.client, "connect", "firefox", "camera", "snapd", "camera",
+            baseline_entry=self.BASELINE,
             current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_TIMEOUT)
         self.assertIsNone(message)
@@ -158,6 +172,7 @@ class RunChangeTests(unittest.TestCase):
         self.flaky_get_change("connection-failed")
         outcome, message = changes.run_change(
             self.client, "connect", "firefox", "camera", "snapd", "camera",
+            baseline_entry=self.BASELINE,
             current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_TIMEOUT)
         self.assertIsNone(message)
@@ -168,6 +183,7 @@ class RunChangeTests(unittest.TestCase):
              "summary": "failed"}]
         outcome, message = changes.run_change(
             self.client, "connect", "firefox", "camera", "snapd", "camera",
+            baseline_entry=self.BASELINE,
             current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_ERROR)
         self.assertIn("cannot connect", message)
@@ -176,7 +192,8 @@ class RunChangeTests(unittest.TestCase):
         self.server.delay = 5
         outcome, message = changes.run_change(
             self.client, "connect", "firefox", "camera", "snapd", "camera",
-            timeout=1, current_connections=self.CONNS)
+            timeout=1, baseline_entry=self.BASELINE,
+            current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_TIMEOUT)
         self.assertIsNone(message)
         self.server.delay = 0
@@ -195,10 +212,25 @@ class RunChangeTests(unittest.TestCase):
                            "interface": "docker-support",
                            "connections": []}]}
 
+    def test_mutation_without_baseline_raises(self):
+        for action in ("connect", "disconnect"):
+            with self.assertRaises(changes.NoBaseline):
+                changes.run_change(self.client, action, "firefox",
+                                   "camera", "snapd", "camera")
+            self.assertEqual(self.server.posts, [])
+
     def test_tier3_connect_without_baseline_raises(self):
+        with self.assertRaises(changes.NoBaseline):
+            changes.run_change(self.client, "connect", "firefox",
+                               "docker-support", "snapd", "docker-support",
+                               current_connections=self.tier3_conns())
+        self.assertEqual(self.server.posts, [])
+
+    def test_tier3_connect_not_in_baseline_raises(self):
+        # A baseline exists but has no docker-support entry.
         self.assert_tier3_refused(
             "connect", "firefox", "docker-support",
-            "snapd", "docker-support",
+            "snapd", "docker-support", baseline_entry=self.BASELINE,
             current_connections=self.tier3_conns())
 
     def test_tier3_connect_without_stored_interface_raises(self):
@@ -213,9 +245,11 @@ class RunChangeTests(unittest.TestCase):
     def test_connect_with_unresolved_interface_raises(self):
         self.assert_tier3_refused(
             "connect", "firefox", "ghost",
-            "snapd", "docker-support", current_connections=self.CONNS)
-        self.assert_tier3_refused(
-            "connect", "firefox", "camera", "snapd", "camera")
+            "snapd", "docker-support", baseline_entry=self.BASELINE,
+            current_connections=self.CONNS)
+        with self.assertRaises(changes.NoBaseline):
+            changes.run_change(self.client, "connect", "firefox",
+                               "camera", "snapd", "camera")
 
     def test_authorized_tier3_connect_is_sent(self):
         baseline_entry = {"connected": [
@@ -231,7 +265,11 @@ class RunChangeTests(unittest.TestCase):
     def test_tier3_disconnect_needs_no_authorization(self):
         outcome, message = changes.run_change(
             self.client, "disconnect", "firefox", "docker-support",
-            "snapd", "docker-support")
+            "snapd", "docker-support",
+            baseline_entry={"connected": [
+                {"plug": "docker-support", "slot_snap": "snapd",
+                 "slot": "docker-support",
+                 "interface": "docker-support"}]})
         self.assertEqual(outcome, changes.OUTCOME_DONE)
 
     def test_no_tier3_authorized_flag_exists(self):
