@@ -62,8 +62,9 @@ flatpak override --user --nofilesystem=/run/snapd.socket io.github.massivemarmot
 ```
 
 Reading connections needs no authorization. Every change — a connect or a
-disconnect — triggers a polkit approval dialog shown by the system, once per
-change. Ginger cannot bypass it.
+disconnect — may trigger a polkit approval dialog shown by the system; polkit
+may cache an approval for a few minutes, so consecutive changes can share
+one approval, but each change can ask. Ginger cannot bypass it.
 
 Ginger makes no network connections, sends no telemetry, and logs nothing
 about snap or plug names.

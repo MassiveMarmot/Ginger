@@ -554,7 +554,7 @@ class Window(Adw.ApplicationWindow):
             lines.append("%d step(s) skipped: names no longer exist"
                          % len(skipped))
         if steps:
-            lines.append("This will ask for approval %d times."
+            lines.append("This may ask for approval up to %d times."
                          % len(steps))
         alert = Adw.AlertDialog(heading="Restore original connections?",
                                  body="\n".join(lines))

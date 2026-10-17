@@ -1312,7 +1312,7 @@ class RestoreTests(GingerTestBase):
         self.assertEqual(body.count(self.OUTSIDE_GINGER_SENTENCE), 1)
         self.assertIn("Connect firefox:camera", body)
         self.assertIn("Disconnect firefox:audio-record", body)
-        self.assertIn("This will ask for approval 2 times.", body)
+        self.assertIn("This may ask for approval up to 2 times.", body)
         self.assertFalse(alert.get_body_use_markup())
         self.answer_restore_alert(win, alert, "cancel")
         self.assertEqual(self.server.posts, [])
@@ -1324,7 +1324,7 @@ class RestoreTests(GingerTestBase):
         alert = self.restore_alert(win)
         body = alert.get_body()
         self.assertEqual(body.count(self.OUTSIDE_GINGER_SENTENCE), 1)
-        self.assertIn("This will ask for approval 2 times.", body)
+        self.assertIn("This may ask for approval up to 2 times.", body)
         self.answer_restore_alert(win, alert, "cancel")
 
     def test_restore_batch_success_and_convergence(self):
@@ -1576,7 +1576,7 @@ class RestoreTests(GingerTestBase):
         self.assertIn("Connect firefox:docker-support", body)
         self.assertIn("privileged interface: grants broad system "
                        "access", body)
-        self.assertIn("This will ask for approval 1 times.", body)
+        self.assertIn("This may ask for approval up to 1 times.", body)
         self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
