@@ -492,7 +492,7 @@ class UISmokeTests(GingerTestBase):
                             "baseline.json")
         self.assertTrue(os.path.exists(path))
         import baseline
-        loaded = baseline.load(path)
+        loaded = baseline.load(path)[0]
         self.assertIn("firefox", loaded)
         self.assertEqual(
             sorted(c["plug"] for c in loaded["firefox"]["connected"]),
