@@ -170,6 +170,47 @@ class GingerTestBase(unittest.TestCase):
                 time.sleep(0.01)
         self.assertTrue(condition(), "run_until timed out")
 
+    def switch_rows(self, win):
+        return [r for r in self.walk(win.detail_bin.get_child())
+                if isinstance(r, Adw.SwitchRow)]
+
+    def switch_row(self, win, plug):
+        for r in self.switch_rows(win):
+            if r.plug_name == plug:
+                return r
+        return None
+
+    def toggle_switch(self, row):
+        # Click the real switch child, like a user does.
+        for child in self.walk(row):
+            if isinstance(child, Gtk.Switch):
+                child.emit("activate")
+                return
+        raise AssertionError("no switch inside row")
+
+    def confirm_alert(self, heading_part, response, timeout_ms=3000):
+        alert = self.wait_alert(heading_part, timeout_ms)
+        if alert is not None:
+            alert.emit("response", response)
+        return alert
+
+    def wait_alert(self, heading_part, timeout_ms=3000):
+        ctx = GLib.MainContext.default()
+        end = GLib.get_monotonic_time() + timeout_ms * 1000
+        alert = []
+        while not alert and GLib.get_monotonic_time() < end:
+            alert = [d for w in Gtk.Window.list_toplevels()
+                     for d in self.walk(w)
+                     if isinstance(d, Adw.AlertDialog)
+                     and heading_part in d.get_heading()]
+            if not alert and not ctx.iteration(False):
+                time.sleep(0.01)
+        self.assertGreaterEqual(
+            len(alert), 1, "no %s alert appeared" % heading_part)
+        self.assertEqual(len(alert), 1,
+                         "expected exactly one %s alert" % heading_part)
+        return alert[0]
+
 
 class UISmokeTests(GingerTestBase):
     def test_funnel_icon_loads(self):
@@ -620,16 +661,6 @@ class UISmokeTests(GingerTestBase):
         win = self.make_window()
         self.assertFalse(win.baseline_banner.get_revealed())
 
-    def switch_rows(self, win):
-        return [r for r in self.walk(win.detail_bin.get_child())
-                if isinstance(r, Adw.SwitchRow)]
-
-    def switch_row(self, win, plug):
-        for r in self.switch_rows(win):
-            if r.plug_name == plug:
-                return r
-        return None
-
     def load_win(self, snaps=None, connections=None):
         self.server.snaps = snaps or [dict(SNAP_APP)]
         if connections is not None:
@@ -676,37 +707,6 @@ class UISmokeTests(GingerTestBase):
             self.assert_switches_live(win, False)
         finally:
             os.chmod(data_dir, 0o700)
-
-    def toggle_switch(self, row):
-        # Click the real switch child, like a user does.
-        for child in self.walk(row):
-            if isinstance(child, Gtk.Switch):
-                child.emit("activate")
-                return
-        raise AssertionError("no switch inside row")
-
-    def confirm_alert(self, heading_part, response, timeout_ms=3000):
-        alert = self.wait_alert(heading_part, timeout_ms)
-        if alert is not None:
-            alert.emit("response", response)
-        return alert
-
-    def wait_alert(self, heading_part, timeout_ms=3000):
-        ctx = GLib.MainContext.default()
-        end = GLib.get_monotonic_time() + timeout_ms * 1000
-        alert = []
-        while not alert and GLib.get_monotonic_time() < end:
-            alert = [d for w in Gtk.Window.list_toplevels()
-                     for d in self.walk(w)
-                     if isinstance(d, Adw.AlertDialog)
-                     and heading_part in d.get_heading()]
-            if not alert and not ctx.iteration(False):
-                time.sleep(0.01)
-        self.assertGreaterEqual(
-            len(alert), 1, "no %s alert appeared" % heading_part)
-        self.assertEqual(len(alert), 1,
-                         "expected exactly one %s alert" % heading_part)
-        return alert[0]
 
     def test_header_sent_and_202_to_done(self):
         win = self.load_win()
@@ -1043,26 +1043,45 @@ class RestoreTests(GingerTestBase):
             json_mod.dump(data, f)
 
     def changed_connections(self):
-        # camera disconnected (was in baseline), removable-media
-        # connected manually (was not in baseline).
+        # Relative to CONNECTIONS: camera disconnected (was in the
+        # original state, so Restore connects it) and audio-record
+        # connected manually (was not, so Restore disconnects it).
         conns = copy.deepcopy(CONNECTIONS)
         conns["established"] = [
             e for e in conns["established"]
             if e["plug"]["plug"] != "camera"]
+        conns["undesired"] = [
+            e for e in conns["undesired"]
+            if e["plug"]["plug"] != "audio-record"]
         conns["established"].append({
-            "slot": {"snap": "snapd", "slot": "camera"},
-            "plug": {"snap": "firefox", "plug": "camera"},
-            "interface": "camera", "manual": True})
+            "slot": {"snap": "snapd", "slot": "audio-record"},
+            "plug": {"snap": "firefox", "plug": "audio-record"},
+            "interface": "audio-record", "manual": True})
         return conns
 
     def base_conns_with_baseline(self, conns):
+        # The server serves the changed state; the baseline is the
+        # original state, so the diff is non-empty.
         self.server.snaps = [dict(SNAP_APP)]
         self.server.default_connections = conns
-        self.write_baseline("firefox", self.baseline_for(conns))
+        self.write_baseline("firefox", self.baseline_for(CONNECTIONS))
         win = self.make_window()
         win.on_snap_selected(win.snaps_list,
                              win.snaps_list.get_row_at_index(0))
         return win
+
+    def test_changed_connections_diff_is_two_steps(self):
+        win = self.base_conns_with_baseline(self.changed_connections())
+        steps, skipped, not_restored = win.restore_diff_for(["firefox"])
+        self.assertEqual(skipped, [])
+        self.assertEqual(not_restored, [])
+        self.assertEqual(steps, [
+            {"action": "connect", "plug_snap": "firefox",
+             "plug": "camera", "slot_snap": "snapd", "slot": "camera",
+             "tier": 1},
+            {"action": "disconnect", "plug_snap": "firefox",
+             "plug": "audio-record", "slot_snap": "snapd",
+             "slot": "audio-record", "tier": 1}])
 
     def test_banner_row_only_for_changed_snap(self):
         conns = copy.deepcopy(CONNECTIONS)
@@ -1105,7 +1124,7 @@ class RestoreTests(GingerTestBase):
         self.assertEqual(win.page_stack.get_visible_child_name(), "restore")
         # Sidebar selection and visible page stay in sync.
         selected = win.sidebar_rows.get_selected_row()
-        self.assertEqual(selected.get_title(), "Restore")
+        self.assertEqual(selected.page_name, "Restore")
 
     def test_restore_page_rows_and_buttons(self):
         win = self.base_conns_with_baseline(self.changed_connections())
@@ -1175,8 +1194,7 @@ class RestoreTests(GingerTestBase):
         body = alert.get_body()
         self.assertEqual(body.count(self.OUTSIDE_GINGER_SENTENCE), 1)
         self.assertIn("Connect firefox:camera", body)
-        self.assertIn("Disconnect firefox:removable-media", body)
-        self.assertIn("sensitive interface", body)
+        self.assertIn("Disconnect firefox:audio-record", body)
         self.assertIn("This will ask for approval 2 times.", body)
         self.assertFalse(alert.get_body_use_markup())
         alert.emit("response", "cancel")
@@ -1236,13 +1254,13 @@ class RestoreTests(GingerTestBase):
         # counted as done: "Stopped after 2 of 3".
         conns = self.changed_connections()
         conns = copy.deepcopy(conns)
-        conns["established"].append({
-            "slot": {"snap": "snapd", "slot": "network"},
-            "plug": {"snap": "firefox", "plug": "network"},
-            "interface": "network", "manual": True})
+        # Third step: network was disconnected too (baseline connect).
+        conns["established"] = [
+            e for e in conns["established"]
+            if e["plug"]["plug"] != "network"]
         self.server.snaps = [dict(SNAP_APP)]
         self.server.default_connections = conns
-        self.write_baseline("firefox", self.baseline_for(conns))
+        self.write_baseline("firefox", self.baseline_for(CONNECTIONS))
         win = self.make_window()
         win.on_snap_selected(win.snaps_list,
                              win.snaps_list.get_row_at_index(0))
@@ -1297,25 +1315,27 @@ class RestoreTests(GingerTestBase):
 
     def test_restore_markup_names_render_literally(self):
         plug = "<b>x</b>&amp;"
-        conns = self.changed_connections()
-        conns = copy.deepcopy(conns)
+        # Camera is renamed (same interface) in the plug list and in the
+        # baseline entry, and served disconnected: the restore dialog
+        # must show the markup literally.
+        conns = copy.deepcopy(CONNECTIONS)
+        conns["established"] = [e for e in conns["established"]
+                                if e["plug"]["plug"] != "camera"]
         for p in conns["plugs"]:
             if p["plug"] == "camera":
                 p["plug"] = plug
-        for e in conns["established"]:
-            if e["plug"]["plug"] == "camera":
-                e["plug"]["plug"] = plug
-        conns["established"] = [e for e in conns["established"]
-                                if e["plug"]["plug"] != plug]
         snap = dict(SNAP_APP, name="<snap>&amp;")
         for p in conns["plugs"]:
             p["snap"] = snap["name"]
         for e in conns["established"] + conns["undesired"]:
             e["plug"]["snap"] = snap["name"]
+        entry = self.baseline_for(CONNECTIONS)
+        for c in entry["connected"]:
+            if c["plug"] == "camera":
+                c["plug"] = plug
         self.server.snaps = [snap]
         self.server.default_connections = conns
-        self.write_baseline(snap["name"],
-                            self.baseline_for(conns, snap["name"]))
+        self.write_baseline(snap["name"], entry)
         win = self.make_window()
         win.on_snap_selected(win.snaps_list,
                              win.snaps_list.get_row_at_index(0))
@@ -1431,7 +1451,7 @@ class RestoreTests(GingerTestBase):
         alert = self.restore_alert(win)
         # The state changes behind the dialog's back: camera is
         # connected again (as in the baseline), so the connect step
-        # is stale; removable-media stays connected, so the disconnect
+        # is stale; audio-record stays connected, so the disconnect
         # is still needed.
         conns = self.server.default_connections
         conns["established"].append({
@@ -1445,27 +1465,30 @@ class RestoreTests(GingerTestBase):
         posts = [body["action"] for _, body, _ in self.server.posts]
         self.assertEqual(posts, ["disconnect"])
         self.assertEqual(self.server.posts[0][1]["plugs"][0]["plug"],
-                         "removable-media")
+                         "audio-record")
 
     def test_dialog_with_only_not_restored(self):
-        conns = self.changed_connections()
-        conns = copy.deepcopy(conns)
+        # The baseline's camera plug is now tier-3 docker-support and
+        # disconnected: it can only be listed as not restored, so the
+        # dialog has no approval line and no steps.
+        entry = self.baseline_for(CONNECTIONS)
+        for c in entry["connected"]:
+            if c["plug"] == "camera":
+                c["plug"] = "docker-support"
+                c["slot"] = "docker-support"
+        conns = copy.deepcopy(CONNECTIONS)
+        conns["established"] = [e for e in conns["established"]
+                                if e["plug"]["plug"] != "camera"]
         for p in conns["plugs"]:
             if p["plug"] == "camera":
                 p["interface"] = "docker-support"
                 p["plug"] = "docker-support"
-        for e in conns["established"]:
-            if e["plug"]["plug"] == "camera":
-                e["plug"]["plug"] = "docker-support"
-                e["interface"] = "docker-support"
-        conns["established"] = [e for e in conns["established"]
-                                if e["plug"]["plug"] != "docker-support"]
         conns["slots"].append({"snap": "snapd", "slot": "docker-support",
                               "interface": "docker-support",
                               "connections": []})
         self.server.snaps = [dict(SNAP_APP)]
         self.server.default_connections = conns
-        self.write_baseline("firefox", self.baseline_for(conns))
+        self.write_baseline("firefox", entry)
         win = self.make_window()
         win.on_snap_selected(win.snaps_list,
                              win.snaps_list.get_row_at_index(0))
