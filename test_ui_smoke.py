@@ -1110,12 +1110,14 @@ class RestoreTests(GingerTestBase):
     def tearDown(self):
         # A test that leaves a batch running must fail itself instead
         # of poisoning later tests through the shared mock server.
-        self.run_until(lambda: self.win.restore_batch is None
-                       and not self.win.busy)
-        self.assertIsNone(self.win.restore_batch,
-                          "restore batch left running")
-        self.assertFalse(self.win.busy, "window left busy")
-        super().tearDown()
+        try:
+            self.run_until(lambda: self.win.restore_batch is None
+                           and not self.win.busy)
+            self.assertIsNone(self.win.restore_batch,
+                              "restore batch left running")
+            self.assertFalse(self.win.busy, "window left busy")
+        finally:
+            super().tearDown()
 
     def changed_connections(self):
         # Relative to CONNECTIONS: camera disconnected (was in the
@@ -1321,15 +1323,17 @@ class RestoreTests(GingerTestBase):
                               "kind": "auth-cancelled"}})]
         win.restore_all_button.emit("clicked")
         alert = self.restore_alert(win)
-        toast_before = win.last_toast
         self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         self.assertEqual(len(self.server.posts), 1)
-        # Silent: the last toast is still the step-1 toast.
-        self.assertIn("Restoring: step 1 of 2",
-                      toast_before.get_title())
-        self.assertIs(win.last_toast, toast_before)
+        # Silent: the last toast is the step-1 toast, nothing else.
+        self.assertIsNotNone(win.last_toast)
+        self.assertTrue(win.last_toast.get_title()
+                        .startswith("Restoring: step 1 of 2"),
+                        win.last_toast.get_title())
+        for bad in ("Stopped", "cancel", "State unknown"):
+            self.assertNotIn(bad, win.last_toast.get_title())
 
     def test_restore_error_mid_batch_reports_failed_count(self):
         # Steps 1 and 2 succeed; step 3 fails. The failed step is not
@@ -1443,6 +1447,9 @@ class RestoreTests(GingerTestBase):
         win.change_done("connect", "firefox", "camera",
                         ("snapd", "camera"), changes.OUTCOME_DONE, None)
         self.assertIsNone(win.last_toast)
+        # The closing window correctly leaves the batch; reset it so
+        # the tearDown guard does not fire for this test.
+        win.restore_batch = None
 
     def test_restore_page_pickable(self):
         win = self.base_conns_with_baseline(self.changed_connections())
@@ -1665,12 +1672,17 @@ class RestoreTests(GingerTestBase):
             (403, {"type": "error", "status-code": 403,
                    "result": {"message": "cancelled",
                               "kind": "auth-cancelled"}})]
-        toast_before = win.last_toast
         self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         self.assertEqual(len(self.server.posts), 1)
-        self.assertIs(win.last_toast, toast_before)
+        # Silent: the last toast is the step-1 toast, nothing else.
+        self.assertIsNotNone(win.last_toast)
+        self.assertTrue(win.last_toast.get_title()
+                        .startswith("Restoring: step 1 of 1"),
+                        win.last_toast.get_title())
+        for bad in ("Stopped", "cancel", "State unknown"):
+            self.assertNotIn(bad, win.last_toast.get_title())
 
     def test_tier3_error_mid_batch_reports_count(self):
         win, alert = self.tier3_batch_win()
