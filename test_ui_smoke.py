@@ -1107,6 +1107,16 @@ class RestoreTests(GingerTestBase):
         super().setUp()
         self.server.converge = True
 
+    def tearDown(self):
+        # A test that leaves a batch running must fail itself instead
+        # of poisoning later tests through the shared mock server.
+        self.run_until(lambda: self.win.restore_batch is None
+                       and not self.win.busy)
+        self.assertIsNone(self.win.restore_batch,
+                          "restore batch left running")
+        self.assertFalse(self.win.busy, "window left busy")
+        super().tearDown()
+
     def changed_connections(self):
         # Relative to CONNECTIONS: camera disconnected (was in the
         # original state, so Restore connects it) and audio-record
@@ -1241,6 +1251,13 @@ class RestoreTests(GingerTestBase):
                          "expected exactly one restore alert")
         return alert[0]
 
+    def answer_restore_alert(self, win, alert, response):
+        # AlertDialog.choose completes on a later main-loop iteration;
+        # wait for on_restore_confirmed before asserting or waiting on
+        # later state.
+        alert.emit("response", response)
+        self.run_until(lambda: not win.confirming)
+
     OUTSIDE_GINGER_SENTENCE = (
         "Restore also reverts changes made outside Ginger since the "
         "saved original state (for example with snap connect).")
@@ -1262,7 +1279,7 @@ class RestoreTests(GingerTestBase):
         self.assertIn("Disconnect firefox:audio-record", body)
         self.assertIn("This will ask for approval 2 times.", body)
         self.assertFalse(alert.get_body_use_markup())
-        alert.emit("response", "cancel")
+        self.answer_restore_alert(win, alert, "cancel")
         self.assertEqual(self.server.posts, [])
 
     def test_confirmation_dialog_contents_all_snaps(self):
@@ -1273,14 +1290,14 @@ class RestoreTests(GingerTestBase):
         body = alert.get_body()
         self.assertEqual(body.count(self.OUTSIDE_GINGER_SENTENCE), 1)
         self.assertIn("This will ask for approval 2 times.", body)
-        alert.emit("response", "cancel")
+        self.answer_restore_alert(win, alert, "cancel")
 
     def test_restore_batch_success_and_convergence(self):
         win = self.base_conns_with_baseline(self.changed_connections())
         win.open_restore_page()
         win.restore_all_button.emit("clicked")
         alert = self.restore_alert(win)
-        alert.emit("response", "restore")
+        self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         self.assertEqual(len(self.server.posts), 2)
@@ -1305,7 +1322,7 @@ class RestoreTests(GingerTestBase):
         win.restore_all_button.emit("clicked")
         alert = self.restore_alert(win)
         toast_before = win.last_toast
-        alert.emit("response", "restore")
+        self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         self.assertEqual(len(self.server.posts), 1)
@@ -1338,7 +1355,7 @@ class RestoreTests(GingerTestBase):
              "err": "snapd exploded", "summary": "failed"}]
         win.restore_all_button.emit("clicked")
         alert = self.restore_alert(win)
-        alert.emit("response", "restore")
+        self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None)
         self.assertEqual(len(self.server.posts), 3)
         self.assertIn("Stopped after 2 of 3 steps",
@@ -1414,7 +1431,7 @@ class RestoreTests(GingerTestBase):
         win.restore_all_button.emit("clicked")
         alert = self.restore_alert(win)
         self.assertIn(plug, alert.get_body())
-        alert.emit("response", "cancel")
+        self.answer_restore_alert(win, alert, "cancel")
 
     def test_restore_window_closing_mid_batch(self):
         win = self.base_conns_with_baseline(self.changed_connections())
@@ -1449,13 +1466,13 @@ class RestoreTests(GingerTestBase):
         win.open_restore_page()
         self.assertFalse(win.restore_selected_button.get_sensitive())
         check = win.restore_checks["firefox"]
-        check.emit("toggled")
+        check.set_active(True)
         self.assertTrue(win.restore_selected_button.get_sensitive())
         # Clicking the button opens the confirmation dialog.
         win.restore_selected_button.emit("clicked")
         alert = self.restore_alert(win)
         self.assertIn("Connect firefox:camera", alert.get_body())
-        alert.emit("response", "cancel")
+        self.answer_restore_alert(win, alert, "cancel")
         check.set_active(False)
         self.assertFalse(win.restore_selected_button.get_sensitive())
 
@@ -1465,6 +1482,10 @@ class RestoreTests(GingerTestBase):
         self.run_until(lambda: win.get_mapped()
                        and win.restore_rows.get_width() > 1
                        and win.restore_selected_button.get_width() > 1)
+        # PickFlags.DEFAULT skips insensitive widgets: the Restore
+        # selected button is insensitive until a check is active.
+        win.restore_checks["firefox"].set_active(True)
+        self.assertTrue(win.restore_selected_button.get_sensitive())
         for target in (win.restore_checks["firefox"],
                        win.restore_selected_button,
                        win.restore_all_button):
@@ -1516,7 +1537,7 @@ class RestoreTests(GingerTestBase):
         self.assertIn("privileged interface: grants broad system "
                        "access", body)
         self.assertIn("This will ask for approval 1 times.", body)
-        alert.emit("response", "restore")
+        self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         self.assertEqual(len(self.server.posts), 1)
@@ -1540,7 +1561,7 @@ class RestoreTests(GingerTestBase):
         alert = self.restore_alert(win)
         self.assertIn("Not restored by Ginger", alert.get_body())
         self.assertNotIn("ask for approval", alert.get_body())
-        alert.emit("response", "ok")
+        self.answer_restore_alert(win, alert, "ok")
         self.assertIsNone(win.restore_batch)
         self.assertEqual(self.server.posts, [])
 
@@ -1625,7 +1646,7 @@ class RestoreTests(GingerTestBase):
         body = alert.get_body()
         self.assertNotIn("ask for approval", body)
         self.assertIn("Not restored by Ginger", body)
-        alert.emit("response", "ok")
+        self.answer_restore_alert(win, alert, "ok")
         self.assertIsNone(win.restore_batch)
         self.assertEqual(self.server.posts, [])
 
@@ -1645,7 +1666,7 @@ class RestoreTests(GingerTestBase):
                    "result": {"message": "cancelled",
                               "kind": "auth-cancelled"}})]
         toast_before = win.last_toast
-        alert.emit("response", "restore")
+        self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         self.assertEqual(len(self.server.posts), 1)
@@ -1657,7 +1678,7 @@ class RestoreTests(GingerTestBase):
             {"status": "Doing", "ready": False, "err": None},
             {"status": "Error", "ready": True,
              "err": "snapd refused", "summary": "failed"}]
-        alert.emit("response", "restore")
+        self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None)
         self.assertEqual(len(self.server.posts), 1)
         self.assertIn("Stopped after 0 of 1 steps",
@@ -1688,7 +1709,7 @@ class RestoreTests(GingerTestBase):
         alert = self.restore_alert(win)
         self.assertIn(plug, alert.get_body())
         self.assertFalse(alert.get_body_use_markup())
-        alert.emit("response", "restore")
+        self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         self.assertEqual(len(self.server.posts), 1)
@@ -1707,7 +1728,7 @@ class RestoreTests(GingerTestBase):
                   if isinstance(d, Adw.AlertDialog)
                   and "Restore original connections" in d.get_heading()]
         self.assertEqual(len(alerts), 1)
-        alert.emit("response", "cancel")
+        self.answer_restore_alert(win, alert, "cancel")
         self.assertFalse(win.confirming)
 
     def test_stale_steps_skipped(self):
@@ -1725,7 +1746,7 @@ class RestoreTests(GingerTestBase):
             "plug": {"snap": "firefox", "plug": "camera"},
             "interface": "camera", "manual": True})
         win.load()
-        alert.emit("response", "restore")
+        self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         posts = [body["action"] for _, body, _ in self.server.posts]
@@ -1764,7 +1785,7 @@ class RestoreTests(GingerTestBase):
         body = alert.get_body()
         self.assertNotIn("ask for approval", body)
         self.assertIn("Not restored by Ginger", body)
-        alert.emit("response", "ok")
+        self.answer_restore_alert(win, alert, "ok")
         self.assertIsNone(win.restore_batch)
         self.assertEqual(self.server.posts, [])
 
