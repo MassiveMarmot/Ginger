@@ -110,6 +110,7 @@ class GingerTestBase(unittest.TestCase):
         self.server.change_script = {}
         self.server.next_change_id = 1
         self.server.delay = 0
+        self.server.converge = False
         self.server.default_connections = {
             "established": [], "undesired": [], "plugs": [], "slots": []}
         self.prev_data_dir = os.environ.get("GINGER_DATA_DIR")
@@ -1022,6 +1023,10 @@ class UISmokeTests(GingerTestBase):
 
 
 class RestoreTests(GingerTestBase):
+    def setUp(self):
+        super().setUp()
+        self.server.converge = True
+
     def baseline_for(self, connections, snap="firefox"):
         import baseline as baseline_mod
         return baseline_mod.entry_for(connections, snap)
