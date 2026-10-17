@@ -699,12 +699,13 @@ class UISmokeTests(GingerTestBase):
                      for d in self.walk(w)
                      if isinstance(d, Adw.AlertDialog)
                      and heading_part in d.get_heading()]
-            self.assertEqual(len(alert), 1,
-                            "expected exactly one %s alert" % heading_part)
             if not alert and not ctx.iteration(False):
                 time.sleep(0.01)
-        self.assertTrue(alert, "no %s alert appeared" % heading_part)
-        return alert[0] if alert else None
+        self.assertGreaterEqual(
+            len(alert), 1, "no %s alert appeared" % heading_part)
+        self.assertEqual(len(alert), 1,
+                         "expected exactly one %s alert" % heading_part)
+        return alert[0]
 
     def test_header_sent_and_202_to_done(self):
         win = self.load_win()
@@ -935,6 +936,13 @@ class UISmokeTests(GingerTestBase):
                 e["plug"]["plug"] = rename
         return conns
 
+    def test_wait_alert_finds_dialog_presented_later(self):
+        win = self.load_win()
+        GLib.timeout_add(200, lambda: Adw.AlertDialog(
+            heading="Delayed", body="Shown after 200 ms").present(win) or True)
+        alert = self.wait_alert("Delayed")
+        self.assertEqual(alert.get_heading(), "Delayed")
+
     def test_markup_in_connect_confirmation_not_parsed(self):
         plug = "<b>x</b>&amp;"
         conns = copy.deepcopy(CONNECTIONS)
@@ -1136,11 +1144,12 @@ class RestoreTests(GingerTestBase):
                      for d in self.walk(w)
                      if isinstance(d, Adw.AlertDialog)
                      and heading in d.get_heading()]
-            self.assertEqual(len(alert), 1,
-                             "expected exactly one restore alert")
             if not alert and not ctx.iteration(False):
                 time.sleep(0.01)
-        self.assertTrue(alert, "no restore alert appeared")
+        self.assertGreaterEqual(
+            len(alert), 1, "no restore alert appeared")
+        self.assertEqual(len(alert), 1,
+                         "expected exactly one restore alert")
         return alert[0]
 
     OUTSIDE_GINGER_SENTENCE = (
