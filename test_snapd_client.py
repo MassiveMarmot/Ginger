@@ -94,7 +94,7 @@ class MockSnapd:
                  if p.get("plug") == plug.get("plug")), plug.get("plug"))
             established.append({**key, "interface": interface,
                                 "manual": True})
-        conns["established"] = established
+        self.default_connections = {**conns, "established": established}
 
     def _handle(self, conn, method, path, body, headers):
         self.requests.append((method, path))
