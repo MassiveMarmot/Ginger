@@ -68,6 +68,14 @@ class ConfirmationTests(unittest.TestCase):
 
 
 class RunChangeTests(unittest.TestCase):
+    # Evidence run_change resolves the plug's interface from.
+    CONNS = {"established": [], "undesired": [],
+             "plugs": [{"snap": "firefox", "plug": "camera",
+                        "interface": "camera", "apps": [],
+                        "connections": []}],
+             "slots": [{"snap": "snapd", "slot": "camera",
+                        "interface": "camera", "connections": []}]}
+
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.socket_path = os.path.join(self.tmpdir.name, "snapd.socket")
@@ -83,7 +91,8 @@ class RunChangeTests(unittest.TestCase):
             {"status": "Done", "ready": True, "err": None,
              "summary": "done"}]
         outcome, message = changes.run_change(
-            self.client, "connect", "firefox", "camera", "snapd", "camera")
+            self.client, "connect", "firefox", "camera", "snapd", "camera",
+            current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_DONE)
         self.assertIsNone(message)
         path, body, allowed = self.server.posts[0]
@@ -96,7 +105,8 @@ class RunChangeTests(unittest.TestCase):
             {"status": "Error", "ready": True, "err": "cannot connect",
              "summary": "failed"}]
         outcome, message = changes.run_change(
-            self.client, "connect", "firefox", "camera", "snapd", "camera")
+            self.client, "connect", "firefox", "camera", "snapd", "camera",
+            current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_ERROR)
         self.assertIn("cannot connect", message)
 
@@ -117,7 +127,8 @@ class RunChangeTests(unittest.TestCase):
             "result": {"message": "access denied",
                        "kind": "login-required"}}))
         outcome, message = changes.run_change(
-            self.client, "connect", "firefox", "camera", "snapd", "camera")
+            self.client, "connect", "firefox", "camera", "snapd", "camera",
+            current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_ERROR)
         self.assertIn("access denied", message)
 
@@ -138,14 +149,16 @@ class RunChangeTests(unittest.TestCase):
         # failed; treat it like the timeout.
         self.flaky_get_change("request-timeout")
         outcome, message = changes.run_change(
-            self.client, "connect", "firefox", "camera", "snapd", "camera")
+            self.client, "connect", "firefox", "camera", "snapd", "camera",
+            current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_TIMEOUT)
         self.assertIsNone(message)
 
     def test_poll_connection_failure_is_timeout(self):
         self.flaky_get_change("connection-failed")
         outcome, message = changes.run_change(
-            self.client, "connect", "firefox", "camera", "snapd", "camera")
+            self.client, "connect", "firefox", "camera", "snapd", "camera",
+            current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_TIMEOUT)
         self.assertIsNone(message)
 
@@ -154,7 +167,8 @@ class RunChangeTests(unittest.TestCase):
             {"status": "Error", "ready": True, "err": "cannot connect",
              "summary": "failed"}]
         outcome, message = changes.run_change(
-            self.client, "connect", "firefox", "camera", "snapd", "camera")
+            self.client, "connect", "firefox", "camera", "snapd", "camera",
+            current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_ERROR)
         self.assertIn("cannot connect", message)
 
@@ -162,10 +176,70 @@ class RunChangeTests(unittest.TestCase):
         self.server.delay = 5
         outcome, message = changes.run_change(
             self.client, "connect", "firefox", "camera", "snapd", "camera",
-            timeout=1)
+            timeout=1, current_connections=self.CONNS)
         self.assertEqual(outcome, changes.OUTCOME_TIMEOUT)
         self.assertIsNone(message)
         self.server.delay = 0
+
+    def assert_tier3_refused(self, *args, **kwargs):
+        with self.assertRaises(changes.Tier3NotAuthorized):
+            changes.run_change(self.client, *args, **kwargs)
+        self.assertEqual(self.server.posts, [])
+
+    def tier3_conns(self):
+        return {"established": [], "undesired": [],
+                "plugs": [{"snap": "firefox", "plug": "docker-support",
+                           "interface": "docker-support", "apps": [],
+                           "connections": []}],
+                "slots": [{"snap": "snapd", "slot": "docker-support",
+                           "interface": "docker-support",
+                           "connections": []}]}
+
+    def test_tier3_connect_without_baseline_raises(self):
+        self.assert_tier3_refused(
+            "connect", "firefox", "docker-support",
+            "snapd", "docker-support",
+            current_connections=self.tier3_conns())
+
+    def test_tier3_connect_without_stored_interface_raises(self):
+        baseline_entry = {"connected": [
+            {"plug": "docker-support", "slot_snap": "snapd",
+             "slot": "docker-support"}]}
+        self.assert_tier3_refused(
+            "connect", "firefox", "docker-support",
+            "snapd", "docker-support", baseline_entry=baseline_entry,
+            current_connections=self.tier3_conns())
+
+    def test_connect_with_unresolved_interface_raises(self):
+        self.assert_tier3_refused(
+            "connect", "firefox", "ghost",
+            "snapd", "docker-support", current_connections=self.CONNS)
+        self.assert_tier3_refused(
+            "connect", "firefox", "camera", "snapd", "camera")
+
+    def test_authorized_tier3_connect_is_sent(self):
+        baseline_entry = {"connected": [
+            {"plug": "docker-support", "slot_snap": "snapd",
+             "slot": "docker-support", "interface": "docker-support"}]}
+        outcome, message = changes.run_change(
+            self.client, "connect", "firefox", "docker-support",
+            "snapd", "docker-support", baseline_entry=baseline_entry,
+            current_connections=self.tier3_conns())
+        self.assertEqual(outcome, changes.OUTCOME_DONE)
+        self.assertEqual(len(self.server.posts), 1)
+
+    def test_tier3_disconnect_needs_no_authorization(self):
+        outcome, message = changes.run_change(
+            self.client, "disconnect", "firefox", "docker-support",
+            "snapd", "docker-support")
+        self.assertEqual(outcome, changes.OUTCOME_DONE)
+
+    def test_no_tier3_authorized_flag_exists(self):
+        # Evidence, not a caller's flag: run_change must not accept a
+        # bare-True authorization parameter.
+        import inspect
+        params = inspect.signature(changes.run_change).parameters
+        self.assertNotIn("tier3_authorized", params)
 
 
 if __name__ == "__main__":

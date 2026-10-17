@@ -363,7 +363,9 @@ class EndToEndTests(unittest.TestCase):
         for step in steps:
             outcome, _ = changes.run_change(
                 self.client, step["action"], step["plug_snap"],
-                step["plug"], step["slot_snap"], step["slot"])
+                step["plug"], step["slot_snap"], step["slot"],
+                baseline_entry=baselines.get(step["plug_snap"]),
+                current_connections=self.server.default_connections)
             self.assertEqual(outcome, changes.OUTCOME_DONE)
         return steps
 
@@ -425,7 +427,9 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(len(steps), 2)
         outcome, _ = changes.run_change(
             self.client, steps[0]["action"], steps[0]["plug_snap"],
-            steps[0]["plug"], steps[0]["slot_snap"], steps[0]["slot"])
+            steps[0]["plug"], steps[0]["slot_snap"], steps[0]["slot"],
+            baseline_entry=baselines.get(steps[0]["plug_snap"]),
+            current_connections=self.server.default_connections)
         self.assertEqual(outcome, changes.OUTCOME_DONE)
         remaining = restore.compute_diff(
             baselines["firefox"], self.server.default_connections,

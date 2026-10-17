@@ -8,16 +8,18 @@ main-thread invoker. Outcomes (per spec):
 - request_timeout: reload, state unknown, no error
 - error: snapd's message as plain text, reload
 
-A tier 3 connect is refused here unless the caller passes
-tier3_authorized=True after restore.may_reconnect_tier3 said so;
-nothing is sent. Fail closed: the authorization input is required.
+A tier 3 connect is authorized here from evidence (baseline entry and
+current connections) via restore.may_reconnect_tier3; a caller cannot
+assert authorization. Fail closed on anything unresolved.
 """
 
 import interfaces
+import restore
 
 
 class Tier3NotAuthorized(Exception):
-    """A tier 3 connect without baseline authorization."""
+    """A connect not authorized: tier 3 without a matching baseline
+    entry, or a plug whose interface cannot be resolved."""
 
 OUTCOME_DONE = "done"
 OUTCOME_CANCELLED = "auth_cancelled"
@@ -64,23 +66,31 @@ def confirmation_body(action, plug, interface, tier):
 
 
 def run_change(client, action, plug_snap, plug, slot_snap, slot,
-               timeout=None, interface=None, tier3_authorized=False):
+               timeout=None, baseline_entry=None, current_connections=None):
     """Runs on the worker thread. Returns (outcome, message).
 
     A transient error while polling the change (for example a read
     timeout) is reported as a timeout: the change may still have
     applied, so the caller reloads and shows the state as unknown.
 
-    A connect whose plug interface (from the last connections
-    response) is tier 3 is refused unless tier3_authorized is True;
-    nothing is sent. Fail closed: a missing or False authorization
-    refuses the change.
+    Fail closed on evidence, never on a caller's flag: the plug's
+    interface is resolved here from current_connections. A connect
+    with an unresolved interface is refused. A tier 3 connect is
+    authorized only by restore.may_reconnect_tier3 against
+    baseline_entry; nothing is sent otherwise.
     """
-    if action == "connect" \
-            and interfaces.tier_for(interface or "?") == 3 \
-            and not tier3_authorized:
-        raise Tier3NotAuthorized(
-            "tier 3 connect not authorized by the baseline")
+    if action == "connect":
+        interface = restore._interface_of(current_connections or {},
+                                          plug_snap, plug)
+        if interface is None:
+            raise Tier3NotAuthorized(
+                "plug interface unknown; connect refused")
+        if interfaces.tier_for(interface) == 3 \
+                and not restore.may_reconnect_tier3(
+                    baseline_entry, current_connections or {},
+                    plug_snap, plug, slot_snap, slot):
+            raise Tier3NotAuthorized(
+                "tier 3 connect not authorized by the baseline")
 
     def classify(e, polling):
         kind = getattr(e, "kind", None)

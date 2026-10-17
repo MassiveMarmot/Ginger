@@ -211,6 +211,21 @@ class GingerTestBase(unittest.TestCase):
                          "expected exactly one %s alert" % heading_part)
         return alert[0]
 
+    def baseline_for(self, connections, snap="firefox"):
+        import baseline as baseline_mod
+        return baseline_mod.entry_for(connections, snap)
+
+    def write_baseline(self, snap, entry):
+        import json as json_mod
+        path = os.path.join(os.environ["GINGER_DATA_DIR"],
+                            "baseline.json")
+        data = {"version": 2, "snaps": {snap: entry}}
+        os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
+        with open(path, "w") as f:
+            json_mod.dump(data, f)
+        with open(path + ".bak", "w") as f:
+            json_mod.dump(data, f)
+
 
 class UISmokeTests(GingerTestBase):
     def test_funnel_icon_loads(self):
@@ -928,6 +943,71 @@ class UISmokeTests(GingerTestBase):
         self.assertEqual(len(self.server.posts), 1)
         self.assertIn("original state", win.last_toast.get_title())
 
+    def undo_button_label(self, toast):
+        return toast.get_button_label() if toast is not None else None
+
+    def tier3_disconnect_win(self, baseline_entry):
+        """Window with docker-support connected (tier 3) and the given
+        baseline entry for firefox; disconnect it and finish."""
+        conns = copy.deepcopy(CONNECTIONS)
+        conns["slots"] = list(conns["slots"]) + [
+            {"snap": "snapd", "slot": "docker-support",
+             "interface": "docker-support", "connections": []}]
+        conns["established"].append({
+            "slot": {"snap": "snapd", "slot": "docker-support"},
+            "plug": {"snap": "firefox", "plug": "docker-support"},
+            "interface": "docker-support", "manual": True})
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = conns
+        self.write_baseline("firefox", baseline_entry)
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list,
+                             win.snaps_list.get_row_at_index(0))
+        row = self.switch_row(win, "docker-support")
+        self.assertTrue(row.get_active())
+        self.toggle_switch(row)
+        self.confirm_alert("Disconnect", "confirm")
+        self.wait_change_finished(win)
+        self.assertIn("Disconnected docker-support",
+                      win.last_toast.get_title())
+        return win
+
+    def test_undo_shown_after_tier1_disconnect(self):
+        win = self.load_win()
+        row = self.switch_row(win, "camera")
+        self.toggle_switch(row)
+        self.confirm_alert("Disconnect", "confirm")
+        self.wait_change_finished(win)
+        self.assertEqual(self.undo_button_label(win.last_toast), "Undo")
+
+    def test_undo_shown_after_tier2_disconnect(self):
+        win = self.load_win()
+        row = self.switch_row(win, "removable-media")
+        self.toggle_switch(row)
+        self.confirm_alert("Disconnect", "confirm")
+        self.wait_change_finished(win)
+        self.assertEqual(self.undo_button_label(win.last_toast), "Undo")
+
+    def test_undo_shown_after_tier3_disconnect_when_authorized(self):
+        entry = self.baseline_for(CONNECTIONS)
+        entry["connected"].append({
+            "plug": "docker-support", "slot_snap": "snapd",
+            "slot": "docker-support", "interface": "docker-support"})
+        win = self.tier3_disconnect_win(entry)
+        self.assertEqual(self.undo_button_label(win.last_toast), "Undo")
+
+    def test_no_undo_after_tier3_disconnect_without_baseline_entry(self):
+        win = self.tier3_disconnect_win(self.baseline_for(CONNECTIONS))
+        self.assertNotEqual(self.undo_button_label(win.last_toast), "Undo")
+
+    def test_no_undo_after_tier3_disconnect_without_stored_interface(self):
+        entry = self.baseline_for(CONNECTIONS)
+        entry["connected"].append({
+            "plug": "docker-support", "slot_snap": "snapd",
+            "slot": "docker-support"})
+        win = self.tier3_disconnect_win(entry)
+        self.assertNotEqual(self.undo_button_label(win.last_toast), "Undo")
+
     def rename_plug(self, conns, plug, rename):
         for p in conns["plugs"]:
             if p["plug"] == plug:
@@ -1026,21 +1106,6 @@ class RestoreTests(GingerTestBase):
     def setUp(self):
         super().setUp()
         self.server.converge = True
-
-    def baseline_for(self, connections, snap="firefox"):
-        import baseline as baseline_mod
-        return baseline_mod.entry_for(connections, snap)
-
-    def write_baseline(self, snap, entry):
-        import json as json_mod
-        path = os.path.join(os.environ["GINGER_DATA_DIR"],
-                            "baseline.json")
-        data = {"version": 2, "snaps": {snap: entry}}
-        os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
-        with open(path, "w") as f:
-            json_mod.dump(data, f)
-        with open(path + ".bak", "w") as f:
-            json_mod.dump(data, f)
 
     def changed_connections(self):
         # Relative to CONNECTIONS: camera disconnected (was in the

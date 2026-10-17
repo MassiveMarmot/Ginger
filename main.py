@@ -620,16 +620,10 @@ class Window(Adw.ApplicationWindow):
             self.busy = True
             self.show_toast("Restoring: step %d of %d"
                             % (batch["index"] + 1, n))
-            authorized = step["action"] == "connect" \
-                and step.get("tier") == 3 and restore.may_reconnect_tier3(
-                    self.baselines.get(step["plug_snap"]), conns,
-                    step["plug_snap"], step["plug"],
-                    step["slot_snap"], step["slot"])
             threading.Thread(
                 target=self.change_worker,
                 args=(step["action"], step["plug_snap"], step["plug"],
-                      (step["slot_snap"], step["slot"]),
-                      authorized),
+                      (step["slot_snap"], step["slot"])),
                 daemon=True).start()
             return
         self.restore_batch = None
@@ -718,8 +712,7 @@ class Window(Adw.ApplicationWindow):
         else:
             self.start_change(row, snap_name, plug, action)
 
-    def confirm_change(self, row, snap_name, plug, action,
-                       tier3_authorized=False):
+    def confirm_change(self, row, snap_name, plug, action):
         if self.confirming:
             self.set_switch_active(row, plug["connected"])
             return
@@ -740,18 +733,16 @@ class Window(Adw.ApplicationWindow):
             alert.set_response_appearance(
                 "confirm", Adw.ResponseAppearance.DESTRUCTIVE)
         alert.choose(self, None, self.on_change_confirmed,
-                     (row, snap_name, plug, action, tier3_authorized))
+                     (row, snap_name, plug, action))
 
     def on_change_confirmed(self, source, result, data):
         self.confirming = False
-        row, snap_name, plug, action, tier3_authorized = data
+        row, snap_name, plug, action = data
         if source.choose_finish(result) != "confirm":
             return
-        self.start_change(row, snap_name, plug, action,
-                          tier3_authorized)
+        self.start_change(row, snap_name, plug, action)
 
-    def start_change(self, row, snap_name, plug, action,
-                     tier3_authorized=False):
+    def start_change(self, row, snap_name, plug, action):
         if self.closing:
             return
         if self.busy or self.confirming:
@@ -772,22 +763,18 @@ class Window(Adw.ApplicationWindow):
         slot = row.plug_slot
         threading.Thread(
             target=self.change_worker,
-            args=(action, snap_name, plug["name"], slot,
-                  tier3_authorized),
+            args=(action, snap_name, plug["name"], slot),
             daemon=True).start()
 
-    def change_worker(self, action, snap_name, plug, slot,
-                      tier3_authorized=False):
+    def change_worker(self, action, snap_name, plug, slot):
+        baseline_entry = self.baselines.get(snap_name)
         conns = self.connections_by_snap.get(snap_name) or {}
-        interface = restore._interface_of(conns, snap_name, plug)
         try:
             outcome, message = changes.run_change(
                 self.client, action, snap_name, plug, slot[0], slot[1],
-                interface=interface,
-                tier3_authorized=tier3_authorized)
-        except changes.Tier3NotAuthorized:
-            outcome, message = changes.OUTCOME_ERROR, \
-                "tier 3 connect not authorized by the original state"
+                baseline_entry=baseline_entry, current_connections=conns)
+        except changes.Tier3NotAuthorized as e:
+            outcome, message = changes.OUTCOME_ERROR, str(e)
         GLib.idle_add(self.change_done, action, snap_name, plug,
                       slot, outcome, message)
 
@@ -841,7 +828,12 @@ class Window(Adw.ApplicationWindow):
             t, snap_name, plug, inverse, slot))
 
     def undo_reconnect_authorized(self, snap_name, plug, slot):
+        """Tier 3 only: the baseline check gates the Undo button and
+        the undo click. Tier 1/2 inverse connects always show Undo."""
         conns = self.connections_by_snap.get(snap_name) or {}
+        interface = restore._interface_of(conns, snap_name, plug)
+        if interfaces.tier_for(interface or "?") != 3:
+            return True
         return restore.may_reconnect_tier3(
             self.baselines.get(snap_name), conns, snap_name,
             plug, slot[0], slot[1])
@@ -862,15 +854,11 @@ class Window(Adw.ApplicationWindow):
             return
         row.plug_slot = slot
         self.set_switch_active(row, inverse == "connect")
-        authorized = inverse == "connect" and info["tier"] == 3 \
-            and self.undo_reconnect_authorized(snap_name, plug, slot)
         if changes.needs_confirmation(inverse, info["interface"],
                                       info["tier"]):
-            self.confirm_change(row, snap_name, info, inverse,
-                                tier3_authorized=authorized)
+            self.confirm_change(row, snap_name, info, inverse)
         else:
-            self.start_change(row, snap_name, info, inverse,
-                              tier3_authorized=authorized)
+            self.start_change(row, snap_name, info, inverse)
 
     def walk(self, widget):
         yield widget
