@@ -50,10 +50,13 @@ def _valid_entry(entry):
     if not isinstance(connected, list):
         return False
     for c in connected:
-        if not isinstance(c, dict) or set(c) != {"plug", "slot_snap",
-                                                 "slot"} \
+        if not isinstance(c, dict) or not set(c) <= {"plug", "slot_snap",
+                                                    "slot", "interface"} \
+                or not {"plug", "slot_snap", "slot"} <= set(c) \
                 or not all(isinstance(c[k], str) for k in
                            ("plug", "slot_snap", "slot")):
+            return False
+        if "interface" in c and not isinstance(c["interface"], str):
             return False
     return True
 
@@ -137,6 +140,7 @@ def entry_for(connections, snap):
             "plug": str(c["plug"].get("plug") or "?"),
             "slot_snap": str(slot.get("snap") or "?"),
             "slot": str(slot.get("slot") or "?"),
+            "interface": str(c.get("interface") or "?"),
         })
     connected.sort(key=lambda c: c["plug"])
     return {"connected": connected}

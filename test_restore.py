@@ -239,6 +239,74 @@ class ComputeDiffTests(unittest.TestCase):
                                     ("connect", "snapd")])
 
 
+class MayReconnectTier3Tests(unittest.TestCase):
+    """The single tier 3 reconnect authorization: tier from the
+    interface (never the plug name), exact triple in the baseline,
+    stored interface must equal the current one (fail closed when
+    missing or changed)."""
+
+    def conns(self, interface="docker-support"):
+        return {
+            "established": [], "undesired": [],
+            "plugs": [plug_entry("docker-support",
+                                 interface=interface)],
+            "slots": [slot_entry("docker-support", interface=interface)],
+        }
+
+    def base(self, interface="docker-support"):
+        entry = {"plug": "docker-support", "slot_snap": "snapd",
+                 "slot": "docker-support"}
+        if interface is not None:
+            entry["interface"] = interface
+        return {"connected": [entry]}
+
+    def test_authorized_when_interface_matches(self):
+        self.assertTrue(restore.may_reconnect_tier3(
+            self.base("docker-support"), self.conns(),
+            "firefox", "docker-support", "snapd", "docker-support"))
+
+    def test_refused_without_stored_interface(self):
+        self.assertFalse(restore.may_reconnect_tier3(
+            self.base(None), self.conns(),
+            "firefox", "docker-support", "snapd", "docker-support"))
+
+    def test_refused_when_interface_changed_since_capture(self):
+        self.assertFalse(restore.may_reconnect_tier3(
+            self.base("camera"), self.conns(),
+            "firefox", "docker-support", "snapd", "docker-support"))
+
+    def test_tier_from_interface_not_plug_name(self):
+        # A plug named docker-support on a tier 1 interface is not
+        # tier 3; a plug named camera on a tier 3 interface is.
+        self.assertFalse(restore.may_reconnect_tier3(
+            self.base("camera"), self.conns("camera"),
+            "firefox", "docker-support", "snapd", "docker-support"))
+        self.assertTrue(restore.may_reconnect_tier3(
+            {"connected": [{"plug": "camera", "slot_snap": "snapd",
+                            "slot": "camera", "interface": "docker-support"}]},
+            {"established": [], "undesired": [],
+             "plugs": [plug_entry("camera", interface="docker-support")],
+             "slots": [slot_entry("camera", interface="docker-support")]},
+            "firefox", "camera", "snapd", "camera"))
+
+    def test_refused_when_not_in_baseline(self):
+        self.assertFalse(restore.may_reconnect_tier3(
+            {"connected": []}, self.conns(),
+            "firefox", "docker-support", "snapd", "docker-support"))
+
+    def test_refused_when_slot_gone(self):
+        c = self.conns()
+        c["slots"] = []
+        self.assertFalse(restore.may_reconnect_tier3(
+            self.base("docker-support"), c,
+            "firefox", "docker-support", "snapd", "docker-support"))
+
+    def test_refused_when_slot_differs(self):
+        self.assertFalse(restore.may_reconnect_tier3(
+            self.base("docker-support"), self.conns(),
+            "firefox", "docker-support", "snapd", "other"))
+
+
 class ChangedSnapsTests(unittest.TestCase):
     def test_changed_snaps_counts(self):
         connections = {

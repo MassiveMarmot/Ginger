@@ -83,8 +83,8 @@ about snap or plug names.
 ## Saved original state
 
 On first sight of each snap, Ginger saves which of that snap's plugs were
-connected, in `baseline.json` in the app's own data directory, with a backup
-copy `baseline.json.bak`. Ginger never deletes or overwrites an entry; the
+connected, and on which interface, in `baseline.json` in the app's own data
+directory, with a backup copy `baseline.json.bak`. Ginger never deletes or overwrites an entry; the
 files are rewritten only to add entries for snaps it sees for the first time.
 
 If the main file becomes unreadable but the backup is valid, Ginger uses the

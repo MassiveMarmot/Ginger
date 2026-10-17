@@ -79,9 +79,37 @@ class BaselineTests(unittest.TestCase):
                 established("network")]},
             "firefox")
         self.assertEqual(entry, {"connected": [
-            {"plug": "camera", "slot_snap": "core24", "slot": "cam"},
-            {"plug": "network", "slot_snap": "snapd", "slot": "network"},
+            {"plug": "camera", "slot_snap": "core24", "slot": "cam",
+             "interface": "camera"},
+            {"plug": "network", "slot_snap": "snapd", "slot": "network",
+             "interface": "camera"},
         ]})
+
+    def test_new_entries_carry_interface(self):
+        entry = baseline.entry_for(
+            {"established": [established("camera",
+                                          interface="docker-support")]},
+            "firefox")
+        self.assertEqual(entry["connected"][0]["interface"],
+                         "docker-support")
+
+    def test_old_file_without_interface_loads(self):
+        self.write_raw({"version": baseline.BASELINE_VERSION,
+                        "snaps": {"firefox": {"connected": [
+                            {"plug": "camera", "slot_snap": "snapd",
+                             "slot": "camera"}]}}})
+        loaded, _ = baseline.load()
+        self.assertEqual(loaded["firefox"]["connected"][0]["plug"],
+                         "camera")
+        self.assertNotIn("interface", loaded["firefox"]["connected"][0])
+
+    def test_interface_must_be_string_when_present(self):
+        self.write_raw({"version": baseline.BASELINE_VERSION,
+                        "snaps": {"firefox": {"connected": [
+                            {"plug": "camera", "slot_snap": "snapd",
+                             "slot": "camera", "interface": 3}]}}})
+        with self.assertRaises(baseline.BaselineError):
+            baseline.load()
 
     def test_corrupt_file_raises(self):
         with open(self.path(), "w") as f:
