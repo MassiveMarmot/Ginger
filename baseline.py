@@ -155,15 +155,30 @@ def capture_new(existing, connections_by_snap):
     return new
 
 
+def _quarantine_target(directory, timestamp, suffix):
+    """A free target name: never overwrite an existing file, so two
+    quarantines in the same second get distinct numeric suffixes."""
+    base = "baseline.unreadable-%s.%s" % (timestamp, suffix)
+    name = base
+    n = 1
+    while os.path.exists(os.path.join(directory, name)):
+        name = "%s-%d" % (base, n)
+        n += 1
+    return os.path.join(directory, name)
+
+
 def quarantine_unreadable(timestamp):
     """Move an unreadable baseline and its backup out of the way;
-    nothing is ever deleted."""
+    nothing is ever deleted or overwritten. Both files are kept under
+    distinct names; the actual final paths are returned."""
     moved = []
-    for path in (_baseline_path(), _backup_path()):
+    for path, suffix in ((_baseline_path(), "json"),
+                        (_backup_path(), "bak.json")):
         if os.path.exists(path):
-            target = os.path.join(
-                os.path.dirname(path),
-                "baseline.unreadable-%s.json" % timestamp)
-            os.replace(path, target)
+            target = _quarantine_target(os.path.dirname(path),
+                                        timestamp, suffix)
+            # Fail instead of overwriting if the name was taken between
+            # the check and the move.
+            os.rename(path, target)
             moved.append(target)
     return moved

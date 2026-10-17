@@ -624,11 +624,19 @@ class UISmokeTests(GingerTestBase):
                       alert.get_body())
         alert.emit("response", "restart")
         self.run_until(lambda: not win.baseline_banner.get_revealed())
-        files = sorted(os.listdir(os.environ["GINGER_DATA_DIR"]))
+        data_dir = os.environ["GINGER_DATA_DIR"]
+        files = sorted(os.listdir(data_dir))
         self.assertEqual(len(files), 3, files)
-        self.assertTrue(all(
-            "baseline.unreadable-" in f for f in files
-            if not f.startswith("baseline.json")), files)
+        moved = [f for f in files if "baseline.unreadable-" in f]
+        self.assertEqual(len(moved), 2, files)
+        # Both originals were kept, each with its own content, under
+        # distinct names.
+        contents = {}
+        for name in moved:
+            with open(os.path.join(data_dir, name)) as f:
+                contents[name] = f.read()
+        self.assertEqual(sorted(contents.values()),
+                         ["also not json", "not-json{"])
         import baseline
         loaded, used_backup = baseline.load()
         self.assertFalse(used_backup)
