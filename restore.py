@@ -93,7 +93,10 @@ def compute_diff(baseline_entry, current_connections, snap_name):
                                 "reason": "slot not in current connections"})
                 continue
             tier = interfaces.tier_for(interface)
-            if tier == 3:
+            if tier == 3 \
+                    and not may_reconnect_tier3(
+                        baseline_entry, current_connections,
+                        snap_name, plug, slot_snap, slot):
                 not_restored.append(
                     {"snap": snap_name, "plug": plug,
                      "command": "snap connect %s:%s %s:%s"
@@ -118,7 +121,10 @@ def compute_diff(baseline_entry, current_connections, snap_name):
                 continue
             interface = _interface_of(current_connections, snap_name, plug)
             tier = interfaces.tier_for(interface or "?")
-            if tier == 3:
+            if tier == 3 \
+                    and not may_reconnect_tier3(
+                        baseline_entry, current_connections,
+                        snap_name, plug, slot_snap, slot):
                 not_restored.append(
                     {"snap": snap_name, "plug": plug,
                      "command": "snap connect %s:%s %s:%s"
@@ -147,11 +153,20 @@ def compute_diff(baseline_entry, current_connections, snap_name):
     return {"steps": steps, "skipped": skipped, "not_restored": not_restored}
 
 
+def is_changed(baseline_entry, current_connections, snap_name):
+    """The one shared check: a snap is changed when its diff has at
+    least one step or at least one not-restored entry."""
+    diff = compute_diff(baseline_entry, current_connections, snap_name)
+    return bool(diff["steps"]) or bool(diff["not_restored"])
+
+
 def changed_snaps(baselines, connections):
-    """{snap: step count} for snaps whose diff has steps."""
+    """{snap: step count} for snaps whose diff has steps or
+    not-restored entries (step count for the dialog, presence for
+    every 'changed' signal)."""
     changed = {}
     for snap, entry in baselines.items():
         diff = compute_diff(entry, connections, snap)
-        if diff["steps"]:
+        if diff["steps"] or diff["not_restored"]:
             changed[snap] = len(diff["steps"])
     return changed

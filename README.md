@@ -75,7 +75,10 @@ about snap or plug names.
   `ssh-keys`) asks for confirmation.
 - Unknown interfaces are treated as sensitive.
 - Some interfaces (for example `docker-support` and `snapd-control`) are
-  never connected by Ginger; they are shown and can be disconnected.
+  privileged: the Permissions switch never connects them, and Ginger
+  connects one only to put back a connection the saved original state
+  records as connected (Restore and Undo), with a strong warning and the
+  usual approval. A connection can always be disconnected.
 - Disconnecting some interfaces (`desktop`, `wayland`, `x11`, `opengl`,
   `network`, `audio-playback`) can stop an app from working or prevent it
   from starting; the confirmation says so.
