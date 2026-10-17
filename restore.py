@@ -41,6 +41,27 @@ def _slot_exists(connections, slot_snap, slot):
     return False
 
 
+def may_reconnect_tier3(baseline_entry, current_connections,
+                        plug_snap, plug, slot_snap, slot):
+    """True only for a tier-3 connect that puts back a connection the
+    baseline records as connected. The plug's interface must be tier 3
+    in current_connections["plugs"] (never the plug name), the exact
+    triple (plug, slot_snap, slot) must be in the baseline's connected
+    list, and the plug and slot must exist in the current response."""
+    interface = _interface_of(current_connections, plug_snap, plug)
+    if interfaces.tier_for(interface or "?") != 3:
+        return False
+    if not _slot_exists(current_connections, slot_snap, slot):
+        return False
+    for entry in (baseline_entry or {}).get("connected") or []:
+        if not isinstance(entry, dict):
+            continue
+        if (entry.get("plug"), entry.get("slot_snap"),
+                entry.get("slot")) == (plug, slot_snap, slot):
+            return True
+    return False
+
+
 def compute_diff(baseline_entry, current_connections, snap_name):
     """Ordered steps, skipped items with reasons, and not-restored
     tier-3 items. Baseline entries name plugs and slots; anything that
