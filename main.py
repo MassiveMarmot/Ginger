@@ -74,7 +74,11 @@ class Window(Adw.ApplicationWindow):
             tooltip_text="Refresh"))
 
         menu = Gio.Menu()
+        menu.append("Restore all…", "win.restore-page")
         menu.append("About", "win.about")
+        restore_page = Gio.SimpleAction.new("restore-page", None)
+        restore_page.connect("activate", self.open_restore_page)
+        self.add_action(restore_page)
         about = Gio.SimpleAction.new("about", None)
         about.connect("activate", lambda *a: self.show_about())
         self.add_action(about)
@@ -351,8 +355,13 @@ class Window(Adw.ApplicationWindow):
     def changed_snaps(self):
         if self.baseline_problem is not None:
             return {}
-        return restore.changed_snaps(
-            self.baselines, self.connections_by_snap)
+        changed = {}
+        for snap, entry in self.baselines.items():
+            diff = restore.compute_diff(
+                entry, self.connections_by_snap.get(snap) or {}, snap)
+            if diff["steps"]:
+                changed[snap] = len(diff["steps"])
+        return changed
 
     def on_restore_selected(self):
         snaps = sorted(snap for snap, check in self.restore_checks.items()
