@@ -59,6 +59,7 @@ Ginger is a GNOME/libadwaita app that lists installed snaps and lets the user re
 - **Disconnecting a manually connected plug that is not auto-connected** (`firefox:pcscd`) leaves it in neither `established` nor `undesired`. Disconnecting an auto-connected plug moves it to `undesired`. Compare states using `established` only.
 - **List installed snaps:** `GET /v2/snaps`, fields seen: `name`, `summary`, `version`, `type`, `apps`, `icon`, `publisher`.
 - Responses: `{"type":"sync"|"async","error","status-code","result"}`. Errors carry `result.message` and `result.kind`.
+- **Connect to a nonexistent slot** (snapd 2.77.1, Ubuntu 26.04 VM, normal user): HTTP 400, no `kind`, message `snap "snapd" has no slot named "nonexistent"`. Ginger never sends this (slot names come from the last connections response); a client seeing it shows the message as plain text.
 - Reported by the coding agent from its sandbox, to be confirmed on the maintainer's machine before they count as verified: a redundant connect returns 202 Done; a nonexistent slot returns 400 without `kind`; an unknown snap in the query returns error kind `snap-not-found`.
 
 Documented, not yet seen (handle generically): task statuses are `Do`, `Doing`, `Done`, `Error`, `Hold`, `Undo`, `Undoing`, `Abort` and `Wait`. The change `status` summarises its tasks, `ready` is true when finished, and `err` is present when it failed. Treat `Done` as success, `ready` with `err` or status `Error` as failure, and any other status as "still running" until the timeout.
