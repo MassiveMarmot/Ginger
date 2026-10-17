@@ -413,7 +413,7 @@ class Window(Adw.ApplicationWindow):
         row.snap_name = name
         row.add_prefix(Gtk.Image(icon_name="application-x-executable-symbolic"))
         if name in self.changed_snaps():
-            row.add_suffix(Gtk.Image(icon_name="document-modified-symbolic",
+            row.add_suffix(Gtk.Image(icon_name="document-edit-symbolic",
                                      tooltip_text="Modified"))
         return row
 

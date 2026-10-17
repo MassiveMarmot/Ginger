@@ -228,6 +228,31 @@ class GingerTestBase(unittest.TestCase):
 
 
 class UISmokeTests(GingerTestBase):
+    def test_every_icon_name_exists_in_theme(self):
+        # Every icon literal used in main.py must be in the theme (the
+        # funnel icon is loaded from design-icons/ by the app). A
+        # missing name would render the red missing-icon fallback.
+        self.make_window()
+        theme = Gtk.IconTheme.get_for_display(self.win.get_display())
+        root = os.path.dirname(os.path.abspath(__file__))
+        import re as re_mod
+        with open(os.path.join(root, "main.py")) as f:
+            main_src = f.read()
+        names = set()
+        for m in re_mod.finditer(
+                r'icon_name="([a-z0-9-]+)"', main_src):
+            names.add(m.group(1))
+        for m in re_mod.finditer(
+                r'set_icon_name\("([a-z0-9-]+)"\)', main_src):
+            names.add(m.group(1))
+        for m in re_mod.finditer(
+                r'"([a-z0-9-]+-symbolic)"', main_src):
+            names.add(m.group(1))
+        names.add(main.FUNNEL_ICON)
+        self.assertGreater(len(names), 0)
+        missing = sorted(n for n in names if not theme.has_icon(n))
+        self.assertEqual(missing, [])
+
     def test_funnel_icon_loads(self):
         self.make_window()
         theme = Gtk.IconTheme.get_for_display(self.win.get_display())
@@ -1189,7 +1214,7 @@ class RestoreTests(GingerTestBase):
         row = win.snaps_list.get_row_at_index(0)
         icons = [w for w in self.walk(row)
                  if isinstance(w, Gtk.Image)
-                 and w.get_icon_name() == "document-modified-symbolic"]
+                 and w.get_icon_name() == "document-edit-symbolic"]
         self.assertTrue(icons)
         self.assertFalse(win.only_changed)
         win.changed_check.set_active(True)
@@ -1649,7 +1674,7 @@ class RestoreTests(GingerTestBase):
         self.assertEqual([r.get_title() for r in rows], ["firefox"])
         icons = [s for s in win.walk(rows[0])
                   if isinstance(s, Gtk.Image)
-                  and s.get_icon_name() == "document-modified-symbolic"]
+                  and s.get_icon_name() == "document-edit-symbolic"]
         self.assertEqual(len(icons), 1)
         win.open_restore_page()
         restore_rows = [r for r in win.walk(win.restore_rows)
