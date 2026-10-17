@@ -83,7 +83,10 @@ CONNECTIONS = {
 }
 
 
-class UISmokeTests(unittest.TestCase):
+class GingerTestBase(unittest.TestCase):
+    """Shared fixtures and helpers; no test methods, so subclass
+    tests run only once each."""
+
     @classmethod
     def setUpClass(cls):
         cls.tmpdir = tempfile.TemporaryDirectory()
@@ -166,6 +169,8 @@ class UISmokeTests(unittest.TestCase):
                 time.sleep(0.01)
         self.assertTrue(condition(), "run_until timed out")
 
+
+class UISmokeTests(GingerTestBase):
     def test_funnel_icon_loads(self):
         self.make_window()
         theme = Gtk.IconTheme.get_for_display(self.win.get_display())
@@ -1008,7 +1013,7 @@ class UISmokeTests(unittest.TestCase):
         self.assertTrue(self.switch_row(win, "camera").get_active())
 
 
-class RestoreTests(UISmokeTests):
+class RestoreTests(GingerTestBase):
     def baseline_for(self, connections, snap="firefox"):
         import baseline as baseline_mod
         return baseline_mod.entry_for(connections, snap)
@@ -1047,7 +1052,7 @@ class RestoreTests(UISmokeTests):
         return win
 
     def test_banner_row_only_for_changed_snap(self):
-        conns = CONNECTIONS
+        conns = copy.deepcopy(CONNECTIONS)
         self.server.snaps = [dict(SNAP_APP)]
         self.server.default_connections = conns
         self.write_baseline("firefox", self.baseline_for(conns))
@@ -1580,6 +1585,30 @@ class PointerPickTests(unittest.TestCase):
     def test_unrevealed_banner_takes_no_space(self):
         self.assertFalse(self.win.baseline_banner.get_revealed())
         self.assertEqual(self.win.baseline_banner.get_height(), 0)
+
+
+class MockStateLeakTests(unittest.TestCase):
+    """POSTs through the mock must not mutate dicts the test assigned
+    by reference (the module-level CONNECTIONS is the regression case)."""
+
+    def test_interface_change_does_not_mutate_source_dict(self):
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        server = MockSnapd(os.path.join(tmpdir.name, "snapd.socket"))
+        self.addCleanup(server.stop)
+        before = copy.deepcopy(CONNECTIONS)
+        server.default_connections = CONNECTIONS
+        server.apply_interface_change({
+            "action": "disconnect",
+            "plugs": [{"snap": "firefox", "plug": "camera"}],
+            "slots": [{"snap": "snapd", "slot": "camera"}],
+        })
+        self.assertEqual(CONNECTIONS, before)
+        # The mock's own state still converges.
+        self.assertEqual(
+            [e["plug"]["plug"]
+             for e in server.default_connections["established"]],
+            ["network", "removable-media"])
 
 
 class PackagingTests(unittest.TestCase):
