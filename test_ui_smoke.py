@@ -248,7 +248,7 @@ class UISmokeTests(GingerTestBase):
         for m in re_mod.finditer(
                 r'"([a-z0-9-]+-symbolic)"', main_src):
             names.add(m.group(1))
-        names.add(main.FUNNEL_ICON)
+        names.add(self.main.FUNNEL_ICON)
         self.assertGreater(len(names), 0)
         missing = sorted(n for n in names if not theme.has_icon(n))
         self.assertEqual(missing, [])
@@ -651,7 +651,8 @@ class UISmokeTests(GingerTestBase):
         self.run_until(lambda: not win.baseline_banner.get_revealed())
         data_dir = os.environ["GINGER_DATA_DIR"]
         files = sorted(os.listdir(data_dir))
-        self.assertEqual(len(files), 3, files)
+        # Two quarantined files plus a fresh baseline.json and .bak.
+        self.assertEqual(len(files), 4, files)
         moved = [f for f in files if "baseline.unreadable-" in f]
         self.assertEqual(len(moved), 2, files)
         # Both originals were kept, each with its own content, under
@@ -1360,10 +1361,18 @@ class RestoreTests(GingerTestBase):
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         self.assertEqual(len(self.server.posts), 1)
-        # No error alert; a plain cancel toast (no step finished).
-        alerts = [d for w in Gtk.Window.list_toplevels()
-                  for d in self.walk(w) if isinstance(d, Adw.AlertDialog)]
-        self.assertEqual(alerts, [])
+        # No error alert; a plain cancel toast (no step finished). The
+        # just-answered confirmation dialog may still be in the tree
+        # while it closes; anything else mapped is a real error alert.
+        self.run_until(lambda: all(
+            d is alert or not d.get_visible()
+            for w in Gtk.Window.list_toplevels()
+            for d in self.walk(w) if isinstance(d, Adw.AlertDialog)))
+        others = [d for w in Gtk.Window.list_toplevels()
+                  for d in self.walk(w)
+                  if isinstance(d, Adw.AlertDialog) and d is not alert
+                  and d.get_visible()]
+        self.assertEqual([d.get_heading() for d in others], [])
         self.assertIsNotNone(win.last_toast)
         self.assertEqual(win.last_toast.get_title(), "Restore cancelled")
 
@@ -1708,10 +1717,18 @@ class RestoreTests(GingerTestBase):
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         self.assertEqual(len(self.server.posts), 1)
-        # No error alert; a plain cancel toast (no step finished).
-        alerts = [d for w in Gtk.Window.list_toplevels()
-                  for d in self.walk(w) if isinstance(d, Adw.AlertDialog)]
-        self.assertEqual(alerts, [])
+        # No error alert; a plain cancel toast (no step finished). The
+        # just-answered confirmation dialog may still be in the tree
+        # while it closes; anything else mapped is a real error alert.
+        self.run_until(lambda: all(
+            d is alert or not d.get_visible()
+            for w in Gtk.Window.list_toplevels()
+            for d in self.walk(w) if isinstance(d, Adw.AlertDialog)))
+        others = [d for w in Gtk.Window.list_toplevels()
+                  for d in self.walk(w)
+                  if isinstance(d, Adw.AlertDialog) and d is not alert
+                  and d.get_visible()]
+        self.assertEqual([d.get_heading() for d in others], [])
         self.assertIsNotNone(win.last_toast)
         self.assertEqual(win.last_toast.get_title(), "Restore cancelled")
 
