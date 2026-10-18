@@ -16,7 +16,7 @@ import restore
 from snapd_client import Client, SnapdError
 
 APP_ID = "io.github.massivemarmot.Ginger"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 REPO_URL = "https://github.com/MassiveMarmot/Ginger"
 FUNNEL_ICON = "funnel-symbolic"
 
