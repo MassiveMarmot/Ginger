@@ -2136,6 +2136,47 @@ class PackagingTests(unittest.TestCase):
             '<launchable type="desktop-id">'
             "io.github.massivemarmot.Ginger.desktop</launchable>", metainfo)
 
+    def test_manifest_installs_every_module_and_icons(self):
+        root = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(root,
+                               "io.github.massivemarmot.Ginger.yml")) as f:
+            manifest = f.read()
+        # Every local module imported by main.py and the other modules,
+        # transitively, is in the first install line (/app/share/ginger).
+        local_imports = set()
+        for name in ("main.py", "changes.py", "restore.py", "baseline.py",
+                     "interfaces.py", "snapd_client.py"):
+            with open(os.path.join(root, name)) as f:
+                mod_src = f.read()
+            for m in re.finditer(r"^(?:import|from) ([a-z_]+)",
+                                 mod_src, re.M):
+                mod = m.group(1)
+                if os.path.exists(os.path.join(root, mod + ".py")):
+                    local_imports.add(mod + ".py")
+        self.assertEqual(local_imports, {
+            "baseline.py", "changes.py", "interfaces.py",
+            "restore.py", "snapd_client.py"})
+        install_line = next(
+            l for l in manifest.splitlines()
+            if "install" in l and "/app/share/ginger " in l)
+        for module in sorted(local_imports):
+            self.assertIn(module, install_line)
+        # finish-args is exactly the two allowed entries.
+        finish = manifest.split("finish-args:")[1].split("modules:")[0]
+        self.assertEqual(
+            [l.strip() for l in finish.strip().splitlines()],
+            ["- --socket=wayland", "- --filesystem=/run/snapd.socket"])
+        # Every icon, desktop and metainfo file the manifest installs
+        # exists in the repo.
+        for l in manifest.splitlines():
+            m = re.search(r"install -Dm644 (\S+\.\w+)", l)
+            if m:
+                self.assertTrue(
+                    os.path.exists(os.path.join(root, m.group(1))),
+                    m.group(1))
+        # Runtime version.
+        self.assertIn('runtime-version: "50"', manifest)
+
 
 if __name__ == "__main__":
     unittest.main()
