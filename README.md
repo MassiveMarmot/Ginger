@@ -38,7 +38,7 @@ flatpak install --user ginger-0.2.0.flatpak
 flatpak run io.github.massivemarmot.Ginger
 ```
 
-TODO: Build commands verified on the maintainer's VM: <date>
+Build commands verified on the maintainer's VM: 2026-10-18.
 
 ## How it works, and the permission it needs
 
