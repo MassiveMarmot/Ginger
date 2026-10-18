@@ -28,8 +28,11 @@ flatpak-builder --user --install --force-clean build-dir io.github.massivemarmot
 To produce a shareable bundle:
 
 ```sh
-flatpak build-bundle ~/.local/share/flatpak ginger-0.2.0.flatpak io.github.massivemarmot.Ginger
+flatpak build-bundle ~/.local/share/flatpak/repo ginger-0.2.0.flatpak io.github.massivemarmot.Ginger
 ```
+
+The bundle contains only the app; Flatpak fetches the GNOME runtime
+from Flathub on install.
 
 Install a bundle with:
 
@@ -37,6 +40,9 @@ Install a bundle with:
 flatpak install --user ginger-0.2.0.flatpak
 flatpak run io.github.massivemarmot.Ginger
 ```
+
+Verify a download: compare `sha256sum ginger-0.2.0.flatpak` with the
+hash in the release notes.
 
 Build commands verified on the maintainer's VM: 2026-10-18.
 

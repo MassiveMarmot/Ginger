@@ -1,6 +1,6 @@
 # Ginger Build Spec and Build Plan
 
-Tagline: **Ginger for Snaps**. App ID: `io.github.massivemarmot.Ginger`. Repo: https://github.com/MassiveMarmot/Ginger. License: GPL-3.0-or-later. Current target: v0.2.0.
+Tagline: **Ginger for Snaps**. App ID: `io.github.massivemarmot.Ginger`. Repo: https://github.com/MassiveMarmot/Ginger. License: GPL-3.0-or-later. Released: v0.2.0 (2026-10-18). Next: v0.3 (see Planned after v0.2).
 
 This file is the single source of truth for scope, decisions, API facts, tests and milestones. Update it in the same change as any behavior change.
 
@@ -147,8 +147,8 @@ Keep the v0.1 layout (OverlaySplitView, sidebar with Snaps, NavigationSplitView 
 2. **Client and mock tests.** DONE. `list_connections`, `change_interface`, `get_change`, polling helper, mock tests, `spike_connect.py`.
 3. **Read-only UI and baseline capture.** DONE. Baseline file, snap list counts, Permissions group, tiers, hidden `content`, funnel option, status pages.
 4. **Change flow.** DONE. Live switches, worker thread, confirmation dialogs, polling, error and cancel handling, undo toast, no change without a baseline.
-5. **Restore.** MERGED (2026-10-17), not yet signed off. Part A: client allowlist. Part B: baseline validation, diff, per-snap button, Restore page, batch execution, `.bak` fallback, "Start a new saved state". Open items: UI tests in `RestoreTests` still failing (fixture and test-timing fixes briefed); the tier 3 changes above (counts as changed; baseline-only reconnect); the real-machine Restore test.
-6. **Packaging.** PENDING. Manifest, README (what it does; the socket permission and polkit approval; the baseline file and its limitation; how to inspect or revoke with `flatpak override`; privacy; AI-assisted development note; "Ginger is not affiliated with or endorsed by Canonical. Snap and Ubuntu are trademarks of Canonical Ltd."), metainfo validation, `VERSION` = `0.2.0` matching the metainfo release, dark-mode check, exact build commands for the maintainer's VM.
+5. **Restore.** DONE (2026-10-18): merged and manually verified on the maintainer's VM (M1-M8). Part A: client allowlist. Part B: baseline validation, diff, per-snap button, Restore page, batch execution, `.bak` fallback, "Start a new saved state".
+6. **Packaging.** DONE (2026-10-18): built, validated and released.
 7. **Later:** real snap icons, interface summaries, install/remove, batch actions.
 
 ## Review checklist (done by the reviewer after each milestone)
@@ -165,8 +165,35 @@ Keep the v0.1 layout (OverlaySplitView, sidebar with Snaps, NavigationSplitView 
 - Leftover references to the old app name or the removed prompt feature.
 - Needless complexity: could it be simpler or shorter?
 
+## Release steps (maintainer's VM)
+
+One-time setup:
+- `sudo apt install flatpak-builder appstream desktop-file-utils gh`
+- `flatpak install --user flathub org.gnome.Platform//50 org.gnome.Sdk//50`
+- `gh auth login` (browser flow). If the browser flow fails, use a fine-grained token limited to this repository (Contents: read and write, short expiry) with `gh auth login --with-token`. Never paste a token into chats, issues or files.
+- Git identity for this repo only (no `--global`): user.name `MassiveMarmot`, user.email `<numeric id>+MassiveMarmot@users.noreply.github.com` (the id: `gh api user --jq .id`).
+
+Per release:
+1. On `main`, merged, run the full suite and check the output is clean: `xvfb-run -a python3 -m unittest discover -v 2>&1 | tee /tmp/ginger-test.log; grep -E "CRITICAL|Traceback|^(FAIL|ERROR)" /tmp/ginger-test.log; tail -3 /tmp/ginger-test.log`
+2. Version bump, done earlier in a normal change: `VERSION` in `main.py`, a new `<release version date>` entry in the metainfo, the bundle name in the README. PackagingTests check that they agree.
+3. `unset GINGER_DATA_DIR SNAPD_SOCKET`, then validate: `desktop-file-validate data/io.github.massivemarmot.Ginger.desktop` and `appstreamcli validate --no-net data/io.github.massivemarmot.Ginger.metainfo.xml`. A "pedantic" note about screenshots is acceptable; errors are not.
+4. Build and install: `flatpak-builder --user --install --force-clean build-dir io.github.massivemarmot.Ginger.yml`
+5. Check the Flatpak: `flatpak info --show-permissions io.github.massivemarmot.Ginger` shows only `sockets=wayland;` and `filesystems=/run/snapd.socket;`. The window loads the snap list, shows the funnel icon, opens the Restore page, and About shows the version. Check dark mode (`gsettings set org.gnome.desktop.interface color-scheme prefer-dark`, then back to `default`). Revoke test: `flatpak override --user --nofilesystem=/run/snapd.socket io.github.massivemarmot.Ginger` shows the "cannot reach snapd" page; then `flatpak override --user --reset io.github.massivemarmot.Ginger`. Override test: remove `~/.var/app/io.github.massivemarmot.Ginger/data/ginger`, run `GINGER_DATA_DIR=/tmp/should-be-ignored flatpak run io.github.massivemarmot.Ginger`, close it, and confirm the directory was recreated with `baseline.json` and `baseline.json.bak`.
+6. Record the date in the README line "Build commands verified on the maintainer's VM: <date>.", commit and push to `main`.
+7. Make the bundle from the user installation's OSTree repository, which is the `repo` folder inside `~/.local/share/flatpak` (the folder above it is not a repository, and `flatpak-builder --install` leaves no local `repo`): `flatpak build-bundle ~/.local/share/flatpak/repo ginger-X.Y.Z.flatpak io.github.massivemarmot.Ginger`. The bundle holds only the app (tens of kilobytes); the runtime comes from Flathub on install.
+8. Test the exact file you will ship: `sha256sum ginger-X.Y.Z.flatpak`; `flatpak uninstall --user io.github.massivemarmot.Ginger` (keeps app data); `flatpak install --user ./ginger-X.Y.Z.flatpak`; run it and check About.
+9. Tag and push: `git tag -a vX.Y.Z -m "Ginger X.Y.Z"` and `git push origin vX.Y.Z`. Never re-tag a pushed tag.
+10. Release: `gh release create vX.Y.Z ginger-X.Y.Z.flatpak --title "Ginger X.Y.Z" --notes "<what changed>"`. Put the SHA-256 in the notes (`gh release edit vX.Y.Z --notes "..."`). Bundles are not reproducible: a rebuilt bundle has a different hash, so update the notes whenever the asset is replaced.
+11. Verify: `gh release view vX.Y.Z --json url,assets --jq '.url, (.assets[] | .name, .size)'`.
+
+Record of v0.2.0: asset `ginger-0.2.0.flatpak`, 54108 bytes, SHA-256 `378e280ca72bd0262a0df9a3aa86b87741665eeb394994d7bb50a7028a4cd3ef`.
+
+
 ## Status log
 
 - 2026-10-17: UI test run on the maintainer's VM went from 17 to 8 failures in `RestoreTests` after the fixture fix; remaining causes are test timing (async dialog response), a toggled-signal misuse, an insensitive-pick test, and the tier-3-only "changed" case (now decided, see Decisions).
 - 2026-10-17: tier 3 baseline-only reconnect decided; Stage 1 report (all current tier 3 blocking sites) received; Stage 2 (implementation) waits for the maintainer's go.
+- 2026-10-18: manual tests M1-M8 passed on the maintainer's VM; findings fixed: quarantine overwrote the main file with the `.bak`, missing icon (`document-modified-symbolic` -> `document-edit-symbolic`), dialog wording, cancel toast, manifest missing modules, banner on save failure.
+- 2026-10-18: GNOME runtime 50; Flatpak ignores `GINGER_DATA_DIR` and `SNAPD_SOCKET`.
+- 2026-10-18: v0.2.0 released; asset `ginger-0.2.0.flatpak`, 54108 bytes, SHA-256 `378e280ca72bd0262a0df9a3aa86b87741665eeb394994d7bb50a7028a4cd3ef`.
 - Pending on the maintainer's machine: run `spike_connect.py` on a tier 3 plug that is safe to connect on the VM and report snapd's response (refusal kind and status are UNVERIFIED).
