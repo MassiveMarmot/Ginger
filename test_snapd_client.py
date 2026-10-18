@@ -501,5 +501,34 @@ class AllowlistTests(unittest.TestCase):
         self.assert_denied("GET", "/V2/SNAPS")
 
 
+class SocketHookTests(unittest.TestCase):
+    def setUp(self):
+        self.prev = os.environ.get("SNAPD_SOCKET")
+        os.environ["SNAPD_SOCKET"] = "/tmp/hook.socket"
+        self.orig_hook = snapd_client.env_override_ignored
+
+    def tearDown(self):
+        if self.prev is None:
+            del os.environ["SNAPD_SOCKET"]
+        else:
+            os.environ["SNAPD_SOCKET"] = self.prev
+        snapd_client.env_override_ignored = self.orig_hook
+
+    def test_host_honors_override(self):
+        snapd_client.env_override_ignored = lambda: False
+        self.assertEqual(snapd_client.Client().socket_path,
+                         "/tmp/hook.socket")
+
+    def test_flatpak_ignores_override(self):
+        snapd_client.env_override_ignored = lambda: True
+        self.assertEqual(snapd_client.Client().socket_path,
+                         snapd_client.DEFAULT_SOCKET)
+
+    def test_explicit_path_wins_even_in_flatpak(self):
+        snapd_client.env_override_ignored = lambda: True
+        self.assertEqual(snapd_client.Client(socket_path="/x/y").socket_path,
+                         "/x/y")
+
+
 if __name__ == "__main__":
     unittest.main()

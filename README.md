@@ -65,6 +65,9 @@ disconnect — may trigger a polkit approval dialog shown by the system; polkit
 may cache an approval for a few minutes, so consecutive changes can share
 one approval, but each change can ask. Ginger cannot bypass it.
 
+The `GINGER_DATA_DIR` and `SNAPD_SOCKET` environment variables are test
+hooks and are ignored inside the Flatpak.
+
 Ginger makes no network connections, sends no telemetry, and logs nothing
 about snap or plug names.
 

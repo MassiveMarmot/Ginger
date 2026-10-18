@@ -287,5 +287,35 @@ class BaselineTests(unittest.TestCase):
             os.chmod(self.tmpdir.name, 0o700)
 
 
+class EnvHookTests(unittest.TestCase):
+    def setUp(self):
+        self.prev = os.environ.get("GINGER_DATA_DIR")
+        os.environ["GINGER_DATA_DIR"] = tempfile.mkdtemp()
+        self.orig_exists = os.path.exists
+        import snapd_client
+        self.orig_hook = snapd_client.env_override_ignored
+
+    def tearDown(self):
+        if self.prev is None:
+            del os.environ["GINGER_DATA_DIR"]
+        else:
+            os.environ["GINGER_DATA_DIR"] = self.prev
+        os.path.exists = self.orig_exists
+        import snapd_client
+        snapd_client.env_override_ignored = self.orig_hook
+
+    def test_host_honors_override(self):
+        baseline.env_override_ignored = lambda: False
+        path = baseline.baseline_path()
+        self.assertTrue(path.startswith(os.environ["GINGER_DATA_DIR"]))
+        self.assertTrue(path.endswith("baseline.json"))
+
+    def test_flatpak_ignores_override(self):
+        baseline.env_override_ignored = lambda: True
+        path = baseline.baseline_path()
+        self.assertFalse(path.startswith(os.environ["GINGER_DATA_DIR"]))
+        self.assertEqual(os.path.basename(path), "baseline.json")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,8 @@ import json
 import os
 import tempfile
 
+from snapd_client import env_override_ignored
+
 BASELINE_VERSION = 2
 BASELINE_FILENAME = "baseline.json"
 BACKUP_FILENAME = BASELINE_FILENAME + ".bak"
@@ -15,9 +17,11 @@ class BaselineError(Exception):
 
 
 def _baseline_path():
-    return os.path.join(os.environ.get("GINGER_DATA_DIR",
-                                       _default_data_dir()),
-                        BASELINE_FILENAME)
+    if env_override_ignored():
+        data_dir = _default_data_dir()
+    else:
+        data_dir = os.environ.get("GINGER_DATA_DIR", _default_data_dir())
+    return os.path.join(data_dir, BASELINE_FILENAME)
 
 
 def _default_data_dir():

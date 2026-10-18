@@ -9,6 +9,12 @@ import urllib.parse
 
 
 DEFAULT_SOCKET = "/run/snapd.socket"
+
+
+def env_override_ignored():
+    """GINGER_DATA_DIR and SNAPD_SOCKET are test hooks; inside the
+    Flatpak they are ignored (the sandbox cannot be redirected)."""
+    return os.path.exists("/.flatpak-info")
 POLL_INTERVAL_START = 0.5
 POLL_INTERVAL_MAX = 2.0
 POLL_TIMEOUT = 60.0
@@ -63,6 +69,8 @@ class UnixHTTPConnection(http.client.HTTPConnection):
 
 class Client:
     def __init__(self, socket_path=None):
+        if socket_path is None and env_override_ignored():
+            socket_path = DEFAULT_SOCKET
         self.socket_path = socket_path or os.environ.get("SNAPD_SOCKET",
                                                          DEFAULT_SOCKET)
 
