@@ -624,7 +624,7 @@ class UISmokeTests(GingerTestBase):
             # quarantine button, changes blocked, nothing moved.
             self.assertEqual(win.baseline_banner.get_title(),
                              "Could not save the original state")
-            self.assertIsNone(win.baseline_banner.get_button_label())
+            self.assertFalse(win.baseline_banner.get_button_label())
             self.assert_switches_live(win, False)
             self.assertEqual(win.page_stack.get_visible_child_name(),
                              "snaps")
@@ -653,7 +653,7 @@ class UISmokeTests(GingerTestBase):
         self.assertTrue(win.baseline_banner.get_revealed())
         self.assertEqual(win.baseline_banner.get_title(),
                          "Could not save the original state")
-        self.assertIsNone(win.baseline_banner.get_button_label())
+        self.assertFalse(win.baseline_banner.get_button_label())
         self.assertNotIn("disk full", win.baseline_banner.get_title())
         self.assert_switches_live(win, False)
         self.assertEqual(sorted(os.listdir(data_dir)), [])
