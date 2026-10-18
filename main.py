@@ -554,8 +554,11 @@ class Window(Adw.ApplicationWindow):
             lines.append("%d step(s) skipped: names no longer exist"
                          % len(skipped))
         if steps:
-            lines.append("This may ask for approval up to %d times."
-                         % len(steps))
+            if len(steps) == 1:
+                lines.append("This may ask for approval once.")
+            else:
+                lines.append("This may ask for approval up to %d times."
+                             % len(steps))
         alert = Adw.AlertDialog(heading="Restore original connections?",
                                  body="\n".join(lines))
         self.confirming = True
@@ -637,7 +640,13 @@ class Window(Adw.ApplicationWindow):
         self.restore_batch = None
         if outcome == changes.OUTCOME_TIMEOUT:
             self.show_toast("State unknown, reloaded")
-        elif outcome != changes.OUTCOME_CANCELLED:
+        elif outcome == changes.OUTCOME_CANCELLED:
+            if index == 0:
+                self.show_toast("Restore cancelled")
+            else:
+                self.show_toast("Restore cancelled after %d of %d steps"
+                                % (index, n))
+        else:
             self.show_toast("Stopped after %d of %d steps: %s"
                             % (index, n, message or "snapd error"))
 

@@ -1360,13 +1360,12 @@ class RestoreTests(GingerTestBase):
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         self.assertEqual(len(self.server.posts), 1)
-        # Silent: the last toast is the step-1 toast, nothing else.
+        # No error alert; a plain cancel toast (no step finished).
+        alerts = [d for w in Gtk.Window.list_toplevels()
+                  for d in self.walk(w) if isinstance(d, Adw.AlertDialog)]
+        self.assertEqual(alerts, [])
         self.assertIsNotNone(win.last_toast)
-        self.assertTrue(win.last_toast.get_title()
-                        .startswith("Restoring: step 1 of 2"),
-                        win.last_toast.get_title())
-        for bad in ("Stopped", "cancel", "State unknown"):
-            self.assertNotIn(bad, win.last_toast.get_title())
+        self.assertEqual(win.last_toast.get_title(), "Restore cancelled")
 
     def test_restore_error_mid_batch_reports_failed_count(self):
         # Steps 1 and 2 succeed; step 3 fails. The failed step is not
@@ -1576,7 +1575,7 @@ class RestoreTests(GingerTestBase):
         self.assertIn("Connect firefox:docker-support", body)
         self.assertIn("privileged interface: grants broad system "
                        "access", body)
-        self.assertIn("This may ask for approval up to 1 times.", body)
+        self.assertIn("This may ask for approval once.", body)
         self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
@@ -1709,13 +1708,12 @@ class RestoreTests(GingerTestBase):
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         self.assertEqual(len(self.server.posts), 1)
-        # Silent: the last toast is the step-1 toast, nothing else.
+        # No error alert; a plain cancel toast (no step finished).
+        alerts = [d for w in Gtk.Window.list_toplevels()
+                  for d in self.walk(w) if isinstance(d, Adw.AlertDialog)]
+        self.assertEqual(alerts, [])
         self.assertIsNotNone(win.last_toast)
-        self.assertTrue(win.last_toast.get_title()
-                        .startswith("Restoring: step 1 of 1"),
-                        win.last_toast.get_title())
-        for bad in ("Stopped", "cancel", "State unknown"):
-            self.assertNotIn(bad, win.last_toast.get_title())
+        self.assertEqual(win.last_toast.get_title(), "Restore cancelled")
 
     def test_tier3_error_mid_batch_reports_count(self):
         win, alert = self.tier3_batch_win()
