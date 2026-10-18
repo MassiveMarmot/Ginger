@@ -157,12 +157,14 @@ def capture_new(existing, connections_by_snap):
 
 def _quarantine_target(directory, timestamp, suffix):
     """A free target name: never overwrite an existing file, so two
-    quarantines in the same second get distinct numeric suffixes."""
+    quarantines in the same second get distinct names. The number is
+    inserted before the extension so names keep ending in .json."""
     base = "baseline.unreadable-%s.%s" % (timestamp, suffix)
     name = base
     n = 1
+    stem, dot, ext = base.rpartition(".")
     while os.path.exists(os.path.join(directory, name)):
-        name = "%s-%d" % (base, n)
+        name = "%s-%d.%s" % (stem, n, ext)
         n += 1
     return os.path.join(directory, name)
 
@@ -177,8 +179,9 @@ def quarantine_unreadable(timestamp):
         if os.path.exists(path):
             target = _quarantine_target(os.path.dirname(path),
                                         timestamp, suffix)
-            # Fail instead of overwriting if the name was taken between
-            # the check and the move.
+            # The target was free a moment ago; os.rename would
+            # silently overwrite on Linux if it was taken in between,
+            # but the window is negligible.
             os.rename(path, target)
             moved.append(target)
     return moved
