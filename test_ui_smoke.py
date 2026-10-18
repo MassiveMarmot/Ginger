@@ -620,11 +620,97 @@ class UISmokeTests(GingerTestBase):
         try:
             win = self.make_window()
             self.assertTrue(win.baseline_banner.get_revealed())
+            # Save failure is its own state: different title, no
+            # quarantine button, changes blocked, nothing moved.
+            self.assertEqual(win.baseline_banner.get_title(),
+                             "Could not save the original state")
+            self.assertIsNone(win.baseline_banner.get_button_label())
+            self.assert_switches_live(win, False)
             self.assertEqual(win.page_stack.get_visible_child_name(),
                              "snaps")
             self.assertEqual(len(self.row_texts(win)), 1)
+            self.assertEqual(
+                sorted(os.listdir(data_dir)),
+                sorted(f for f in os.listdir(data_dir)
+                       if "unreadable" not in f))
         finally:
             os.chmod(data_dir, 0o700)
+
+    def test_baseline_save_failure_monkeypatched(self):
+        # Same state without chmod (for root CI): save_snaps raises.
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        data_dir = os.environ["GINGER_DATA_DIR"]
+        import baseline as baseline_mod
+        orig = baseline_mod.save_snaps
+        def failing(snaps):
+            raise OSError("disk full")
+        baseline_mod.save_snaps = failing
+        try:
+            win = self.make_window()
+        finally:
+            baseline_mod.save_snaps = orig
+        self.assertTrue(win.baseline_banner.get_revealed())
+        self.assertEqual(win.baseline_banner.get_title(),
+                         "Could not save the original state")
+        self.assertIsNone(win.baseline_banner.get_button_label())
+        self.assertNotIn("disk full", win.baseline_banner.get_title())
+        self.assert_switches_live(win, False)
+        self.assertEqual(sorted(os.listdir(data_dir)), [])
+
+    def test_banner_title_renders_markup_characters_literally(self):
+        # The banner title carries the data dir path; a path with
+        # markup characters must render literally.
+        data_dir = os.path.join(tempfile.mkdtemp(
+            prefix="ginger-&<test>-"), "sub&dir")
+        os.makedirs(data_dir, exist_ok=True)
+        prev_dir = os.environ["GINGER_DATA_DIR"]
+        os.environ["GINGER_DATA_DIR"] = data_dir
+        try:
+            for name in ("baseline.json", "baseline.json.bak"):
+                with open(os.path.join(data_dir, name), "w") as f:
+                    f.write("not-json{")
+            self.server.snaps = [dict(SNAP_APP)]
+            self.server.default_connections = CONNECTIONS
+            win = self.make_window()
+            self.assertTrue(win.baseline_banner.get_revealed())
+            self.assertFalse(win.baseline_banner.get_use_markup())
+            self.assertIn("&", win.baseline_banner.get_title())
+            self.assertIn("<", win.baseline_banner.get_title())
+        finally:
+            os.environ["GINGER_DATA_DIR"] = prev_dir
+
+    def test_quarantine_failure_shows_plain_toast(self):
+        # OSError while moving the unreadable files: a plain toast,
+        # no reload, files untouched.
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        data_dir = os.environ["GINGER_DATA_DIR"]
+        for name in ("baseline.json", "baseline.json.bak"):
+            with open(os.path.join(data_dir, name), "w") as f:
+                f.write("not-json{")
+        win = self.make_window()
+        self.assertTrue(win.baseline_banner.get_revealed())
+        import baseline as baseline_mod
+        orig = baseline_mod.quarantine_unreadable
+        def failing(timestamp):
+            raise OSError("cannot move")
+        baseline_mod.quarantine_unreadable = failing
+        try:
+            win.baseline_banner.emit("button-clicked")
+            alert = self.wait_alert("Start a new saved state")
+            alert.emit("response", "restart")
+            self.run_until(lambda: win.last_toast is not None
+                           and "Could not move the unreadable files"
+                           in win.last_toast.get_title())
+        finally:
+            baseline_mod.quarantine_unreadable = orig
+        # Nothing moved; the banner is still up and changes blocked.
+        self.assertTrue(win.baseline_banner.get_revealed())
+        self.assertEqual(
+            sorted(os.listdir(data_dir)),
+            ["baseline.json", "baseline.json.bak"])
+        self.assert_switches_live(win, False)
 
     def test_new_saved_state_keeps_unreadable_files(self):
         self.server.snaps = [dict(SNAP_APP)]
@@ -1813,6 +1899,34 @@ class RestoreTests(GingerTestBase):
         self.assertEqual(posts, ["disconnect"])
         self.assertEqual(self.server.posts[0][1]["plugs"][0]["plug"],
                          "audio-record")
+
+    def test_disconnect_step_stale_when_slot_moved(self):
+        # The step targets snapd:audio-record; behind the dialog the
+        # plug is connected to a different slot, so the exact triple
+        # no longer matches, the step is skipped, and nothing is sent.
+        # (Camera is reconnected too, so its connect step is also
+        # stale and the batch has nothing to run.)
+        win = self.base_conns_with_baseline(self.changed_connections())
+        win.open_restore_page()
+        win.restore_all_button.emit("clicked")
+        alert = self.restore_alert(win)
+        conns = self.server.default_connections
+        conns["established"].append({
+            "slot": {"snap": "snapd", "slot": "camera"},
+            "plug": {"snap": "firefox", "plug": "camera"},
+            "interface": "camera", "manual": True})
+        conns["established"] = [
+            e for e in conns["established"]
+            if e["plug"]["plug"] != "audio-record"]
+        conns["established"].append({
+            "slot": {"snap": "other", "slot": "audio-record"},
+            "plug": {"snap": "firefox", "plug": "audio-record"},
+            "interface": "audio-record", "manual": True})
+        win.load()
+        self.answer_restore_alert(win, alert, "restore")
+        self.run_until(lambda: win.restore_batch is None
+                       and win.busy is False)
+        self.assertEqual(self.server.posts, [])
 
     def test_dialog_with_only_not_restored(self):
         # The baseline's camera plug is now tier-3 docker-support and

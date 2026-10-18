@@ -103,6 +103,7 @@ class Window(Adw.ApplicationWindow):
             title="The saved original state cannot be read",
             button_label="Start a new saved state",
             valign=Gtk.Align.START)
+        self.baseline_banner.set_use_markup(False)
         self.baseline_banner.connect("button-clicked",
                                      lambda *a: self.confirm_new_baseline())
         self.toast_overlay = Adw.ToastOverlay(vexpand=True,
@@ -506,8 +507,12 @@ class Window(Adw.ApplicationWindow):
         if source.choose_finish(result) != "restart":
             return
         import time
-        baseline.quarantine_unreadable(
-            time.strftime("%Y%m%d-%H%M%S"))
+        try:
+            baseline.quarantine_unreadable(
+                time.strftime("%Y%m%d-%H%M%S"))
+        except OSError:
+            self.show_toast("Could not move the unreadable files")
+            return
         self.load()
 
     def restore_diff_for(self, snaps):
@@ -610,7 +615,7 @@ class Window(Adw.ApplicationWindow):
                     or restore._interface_of(
                         conns, step["plug_snap"], step["plug"]) is None
             else:
-                stale = not any(key[0] == step["plug"] for key in current)
+                stale = wanted not in current
             if stale:
                 batch["index"] += 1
                 continue
@@ -909,6 +914,7 @@ class Window(Adw.ApplicationWindow):
             return
         self.baselines = {}
         baseline_problem = None
+        save_failed = False
         used_backup = False
         try:
             self.baselines, used_backup = baseline.load()
@@ -924,9 +930,8 @@ class Window(Adw.ApplicationWindow):
             if new:
                 try:
                     baseline.save_snaps({**self.baselines, **new})
-                except OSError as e:
-                    baseline_problem = \
-                        "Could not save the original state: %s" % e
+                except OSError:
+                    save_failed = True
                 else:
                     self.baselines.update(new)
         self.baseline_problem = baseline_problem
@@ -934,6 +939,13 @@ class Window(Adw.ApplicationWindow):
             self.baseline_banner.set_title(
                 "The saved original state cannot be read ("
                 + baseline.baseline_path() + ")")
+            self.baseline_banner.set_button_label(
+                "Start a new saved state")
+            self.baseline_banner.set_revealed(True)
+        elif save_failed:
+            self.baseline_banner.set_title(
+                "Could not save the original state")
+            self.baseline_banner.set_button_label(None)
             self.baseline_banner.set_revealed(True)
         else:
             self.baseline_banner.set_revealed(False)
