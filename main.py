@@ -103,6 +103,7 @@ class Window(Adw.ApplicationWindow):
             title="The saved original state cannot be read",
             button_label="Start a new saved state",
             valign=Gtk.Align.START)
+        self.baseline_banner.set_use_markup(False)
         self.baseline_banner.connect("button-clicked",
                                      lambda *a: self.confirm_new_baseline())
         self.toast_overlay = Adw.ToastOverlay(vexpand=True,
@@ -355,13 +356,8 @@ class Window(Adw.ApplicationWindow):
     def changed_snaps(self):
         if self.baseline_problem is not None:
             return {}
-        changed = {}
-        for snap, entry in self.baselines.items():
-            diff = restore.compute_diff(
-                entry, self.connections_by_snap.get(snap) or {}, snap)
-            if diff["steps"]:
-                changed[snap] = len(diff["steps"])
-        return changed
+        return restore.changed_snaps(
+            self.baselines, self.connections_by_snap)
 
     def on_restore_selected(self):
         snaps = sorted(snap for snap, check in self.restore_checks.items()
@@ -418,7 +414,7 @@ class Window(Adw.ApplicationWindow):
         row.snap_name = name
         row.add_prefix(Gtk.Image(icon_name="application-x-executable-symbolic"))
         if name in self.changed_snaps():
-            row.add_suffix(Gtk.Image(icon_name="document-modified-symbolic",
+            row.add_suffix(Gtk.Image(icon_name="document-edit-symbolic",
                                      tooltip_text="Modified"))
         return row
 
@@ -511,8 +507,12 @@ class Window(Adw.ApplicationWindow):
         if source.choose_finish(result) != "restart":
             return
         import time
-        baseline.quarantine_unreadable(
-            time.strftime("%Y%m%d-%H%M%S"))
+        try:
+            baseline.quarantine_unreadable(
+                time.strftime("%Y%m%d-%H%M%S"))
+        except OSError:
+            self.show_toast("Could not move the unreadable files")
+            return
         self.load()
 
     def restore_diff_for(self, snaps):
@@ -546,7 +546,10 @@ class Window(Adw.ApplicationWindow):
             verb = "Connect" if step["action"] == "connect" \
                 else "Disconnect"
             line = "%s %s:%s" % (verb, step["plug_snap"], step["plug"])
-            if step["tier"] >= 2:
+            if step["tier"] == 3:
+                line += " (privileged interface: grants broad system " \
+                        "access)"
+            elif step["tier"] == 2:
                 line += " (sensitive interface)"
             lines.append(line)
         for item in not_restored:
@@ -556,8 +559,11 @@ class Window(Adw.ApplicationWindow):
             lines.append("%d step(s) skipped: names no longer exist"
                          % len(skipped))
         if steps:
-            lines.append("This will ask for approval %d times."
-                         % len(steps))
+            if len(steps) == 1:
+                lines.append("This may ask for approval once.")
+            else:
+                lines.append("This may ask for approval up to %d times."
+                             % len(steps))
         alert = Adw.AlertDialog(heading="Restore original connections?",
                                  body="\n".join(lines))
         self.confirming = True
@@ -590,13 +596,17 @@ class Window(Adw.ApplicationWindow):
             return
         while batch["index"] < len(batch["steps"]):
             step = batch["steps"][batch["index"]]
-            if step["action"] == "connect" and step.get("tier") == 3:
+            conns = self.connections_by_snap.get(step["plug_snap"]) or {}
+            if step["action"] == "connect" and step.get("tier") == 3 \
+                    and not restore.may_reconnect_tier3(
+                        self.baselines.get(step["plug_snap"]), conns,
+                        step["plug_snap"], step["plug"],
+                        step["slot_snap"], step["slot"]):
                 self.restore_batch = None
                 self.busy = False
-                self.show_toast("Stopped: Ginger never connects this "
-                                "interface")
+                self.show_toast("Stopped: tier 3 connect not authorized "
+                                "by the original state")
                 return
-            conns = self.connections_by_snap.get(step["plug_snap"]) or {}
             current = restore._current_established(conns, step["plug_snap"])
             wanted = (step["plug"], step["slot_snap"], step["slot"])
             if step["action"] == "connect":
@@ -605,7 +615,7 @@ class Window(Adw.ApplicationWindow):
                     or restore._interface_of(
                         conns, step["plug_snap"], step["plug"]) is None
             else:
-                stale = not any(key[0] == step["plug"] for key in current)
+                stale = wanted not in current
             if stale:
                 batch["index"] += 1
                 continue
@@ -635,7 +645,13 @@ class Window(Adw.ApplicationWindow):
         self.restore_batch = None
         if outcome == changes.OUTCOME_TIMEOUT:
             self.show_toast("State unknown, reloaded")
-        elif outcome != changes.OUTCOME_CANCELLED:
+        elif outcome == changes.OUTCOME_CANCELLED:
+            if index == 0:
+                self.show_toast("Restore cancelled")
+            else:
+                self.show_toast("Restore cancelled after %d of %d steps"
+                                % (index, n))
+        else:
             self.show_toast("Stopped after %d of %d steps: %s"
                             % (index, n, message or "snapd error"))
 
@@ -760,8 +776,14 @@ class Window(Adw.ApplicationWindow):
             daemon=True).start()
 
     def change_worker(self, action, snap_name, plug, slot):
-        outcome, message = changes.run_change(
-            self.client, action, snap_name, plug, slot[0], slot[1])
+        baseline_entry = self.baselines.get(snap_name)
+        conns = self.connections_by_snap.get(snap_name) or {}
+        try:
+            outcome, message = changes.run_change(
+                self.client, action, snap_name, plug, slot[0], slot[1],
+                baseline_entry=baseline_entry, current_connections=conns)
+        except (changes.Tier3NotAuthorized, changes.NoBaseline) as e:
+            outcome, message = changes.OUTCOME_ERROR, str(e)
         GLib.idle_add(self.change_done, action, snap_name, plug,
                       slot, outcome, message)
 
@@ -806,9 +828,24 @@ class Window(Adw.ApplicationWindow):
         inverse = "disconnect" if action == "connect" else "connect"
         verb = "Connected" if action == "connect" else "Disconnected"
         toast = self.show_toast("%s %s" % (verb, plug))
+        if inverse == "connect" \
+                and not self.undo_reconnect_authorized(snap_name, plug,
+                                                       slot):
+            return
         toast.set_button_label("Undo")
         toast.connect("button-clicked", lambda t: self.undo_action(
             t, snap_name, plug, inverse, slot))
+
+    def undo_reconnect_authorized(self, snap_name, plug, slot):
+        """Tier 3 only: the baseline check gates the Undo button and
+        the undo click. Tier 1/2 inverse connects always show Undo."""
+        conns = self.connections_by_snap.get(snap_name) or {}
+        interface = restore._interface_of(conns, snap_name, plug)
+        if interfaces.tier_for(interface or "?") != 3:
+            return True
+        return restore.may_reconnect_tier3(
+            self.baselines.get(snap_name), conns, snap_name,
+            plug, slot[0], slot[1])
 
     def undo_action(self, toast, snap_name, plug, inverse, slot):
         toast.dismiss()
@@ -818,7 +855,9 @@ class Window(Adw.ApplicationWindow):
                                         show_all=True)
         info = next((p for p in plugs if p["name"] == plug), None)
         if row is None or info is None or slot is None \
-                or (inverse == "connect" and info["tier"] == 3):
+                or (inverse == "connect" and info["tier"] == 3
+                    and not self.undo_reconnect_authorized(snap_name,
+                                                            plug, slot)):
             self.last_toast = self.make_toast("Couldn't undo")
             self.toast_overlay.add_toast(self.last_toast)
             return
@@ -875,6 +914,7 @@ class Window(Adw.ApplicationWindow):
             return
         self.baselines = {}
         baseline_problem = None
+        save_failed = False
         used_backup = False
         try:
             self.baselines, used_backup = baseline.load()
@@ -890,9 +930,8 @@ class Window(Adw.ApplicationWindow):
             if new:
                 try:
                     baseline.save_snaps({**self.baselines, **new})
-                except OSError as e:
-                    baseline_problem = \
-                        "Could not save the original state: %s" % e
+                except OSError:
+                    save_failed = True
                 else:
                     self.baselines.update(new)
         self.baseline_problem = baseline_problem
@@ -900,6 +939,13 @@ class Window(Adw.ApplicationWindow):
             self.baseline_banner.set_title(
                 "The saved original state cannot be read ("
                 + baseline.baseline_path() + ")")
+            self.baseline_banner.set_button_label(
+                "Start a new saved state")
+            self.baseline_banner.set_revealed(True)
+        elif save_failed:
+            self.baseline_banner.set_title(
+                "Could not save the original state")
+            self.baseline_banner.set_button_label(None)
             self.baseline_banner.set_revealed(True)
         else:
             self.baseline_banner.set_revealed(False)

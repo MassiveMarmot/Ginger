@@ -211,8 +211,48 @@ class GingerTestBase(unittest.TestCase):
                          "expected exactly one %s alert" % heading_part)
         return alert[0]
 
+    def baseline_for(self, connections, snap="firefox"):
+        import baseline as baseline_mod
+        return baseline_mod.entry_for(connections, snap)
+
+    def write_baseline(self, snap, entry):
+        import json as json_mod
+        path = os.path.join(os.environ["GINGER_DATA_DIR"],
+                            "baseline.json")
+        data = {"version": 2, "snaps": {snap: entry}}
+        os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
+        with open(path, "w") as f:
+            json_mod.dump(data, f)
+        with open(path + ".bak", "w") as f:
+            json_mod.dump(data, f)
+
 
 class UISmokeTests(GingerTestBase):
+    def test_every_icon_name_exists_in_theme(self):
+        # Every icon literal used in main.py must be in the theme (the
+        # funnel icon is loaded from design-icons/ by the app). A
+        # missing name would render the red missing-icon fallback.
+        self.make_window()
+        theme = Gtk.IconTheme.get_for_display(self.win.get_display())
+        root = os.path.dirname(os.path.abspath(__file__))
+        import re as re_mod
+        with open(os.path.join(root, "main.py")) as f:
+            main_src = f.read()
+        names = set()
+        for m in re_mod.finditer(
+                r'icon_name="([a-z0-9-]+)"', main_src):
+            names.add(m.group(1))
+        for m in re_mod.finditer(
+                r'set_icon_name\("([a-z0-9-]+)"\)', main_src):
+            names.add(m.group(1))
+        for m in re_mod.finditer(
+                r'"([a-z0-9-]+-symbolic)"', main_src):
+            names.add(m.group(1))
+        names.add(self.main.FUNNEL_ICON)
+        self.assertGreater(len(names), 0)
+        missing = sorted(n for n in names if not theme.has_icon(n))
+        self.assertEqual(missing, [])
+
     def test_funnel_icon_loads(self):
         self.make_window()
         theme = Gtk.IconTheme.get_for_display(self.win.get_display())
@@ -580,11 +620,97 @@ class UISmokeTests(GingerTestBase):
         try:
             win = self.make_window()
             self.assertTrue(win.baseline_banner.get_revealed())
+            # Save failure is its own state: different title, no
+            # quarantine button, changes blocked, nothing moved.
+            self.assertEqual(win.baseline_banner.get_title(),
+                             "Could not save the original state")
+            self.assertFalse(win.baseline_banner.get_button_label())
+            self.assert_switches_live(win, False)
             self.assertEqual(win.page_stack.get_visible_child_name(),
                              "snaps")
             self.assertEqual(len(self.row_texts(win)), 1)
+            self.assertEqual(
+                sorted(os.listdir(data_dir)),
+                sorted(f for f in os.listdir(data_dir)
+                       if "unreadable" not in f))
         finally:
             os.chmod(data_dir, 0o700)
+
+    def test_baseline_save_failure_monkeypatched(self):
+        # Same state without chmod (for root CI): save_snaps raises.
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        data_dir = os.environ["GINGER_DATA_DIR"]
+        import baseline as baseline_mod
+        orig = baseline_mod.save_snaps
+        def failing(snaps):
+            raise OSError("disk full")
+        baseline_mod.save_snaps = failing
+        try:
+            win = self.make_window()
+        finally:
+            baseline_mod.save_snaps = orig
+        self.assertTrue(win.baseline_banner.get_revealed())
+        self.assertEqual(win.baseline_banner.get_title(),
+                         "Could not save the original state")
+        self.assertFalse(win.baseline_banner.get_button_label())
+        self.assertNotIn("disk full", win.baseline_banner.get_title())
+        self.assert_switches_live(win, False)
+        self.assertEqual(sorted(os.listdir(data_dir)), [])
+
+    def test_banner_title_renders_markup_characters_literally(self):
+        # The banner title carries the data dir path; a path with
+        # markup characters must render literally.
+        data_dir = os.path.join(tempfile.mkdtemp(
+            prefix="ginger-&<test>-"), "sub&dir")
+        os.makedirs(data_dir, exist_ok=True)
+        prev_dir = os.environ["GINGER_DATA_DIR"]
+        os.environ["GINGER_DATA_DIR"] = data_dir
+        try:
+            for name in ("baseline.json", "baseline.json.bak"):
+                with open(os.path.join(data_dir, name), "w") as f:
+                    f.write("not-json{")
+            self.server.snaps = [dict(SNAP_APP)]
+            self.server.default_connections = CONNECTIONS
+            win = self.make_window()
+            self.assertTrue(win.baseline_banner.get_revealed())
+            self.assertFalse(win.baseline_banner.get_use_markup())
+            self.assertIn("&", win.baseline_banner.get_title())
+            self.assertIn("<", win.baseline_banner.get_title())
+        finally:
+            os.environ["GINGER_DATA_DIR"] = prev_dir
+
+    def test_quarantine_failure_shows_plain_toast(self):
+        # OSError while moving the unreadable files: a plain toast,
+        # no reload, files untouched.
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = CONNECTIONS
+        data_dir = os.environ["GINGER_DATA_DIR"]
+        for name in ("baseline.json", "baseline.json.bak"):
+            with open(os.path.join(data_dir, name), "w") as f:
+                f.write("not-json{")
+        win = self.make_window()
+        self.assertTrue(win.baseline_banner.get_revealed())
+        import baseline as baseline_mod
+        orig = baseline_mod.quarantine_unreadable
+        def failing(timestamp):
+            raise OSError("cannot move")
+        baseline_mod.quarantine_unreadable = failing
+        try:
+            win.baseline_banner.emit("button-clicked")
+            alert = self.wait_alert("Start a new saved state")
+            alert.emit("response", "restart")
+            self.run_until(lambda: win.last_toast is not None
+                           and "Could not move the unreadable files"
+                           in win.last_toast.get_title())
+        finally:
+            baseline_mod.quarantine_unreadable = orig
+        # Nothing moved; the banner is still up and changes blocked.
+        self.assertTrue(win.baseline_banner.get_revealed())
+        self.assertEqual(
+            sorted(os.listdir(data_dir)),
+            ["baseline.json", "baseline.json.bak"])
+        self.assert_switches_live(win, False)
 
     def test_new_saved_state_keeps_unreadable_files(self):
         self.server.snaps = [dict(SNAP_APP)]
@@ -609,11 +735,20 @@ class UISmokeTests(GingerTestBase):
                       alert.get_body())
         alert.emit("response", "restart")
         self.run_until(lambda: not win.baseline_banner.get_revealed())
-        files = sorted(os.listdir(os.environ["GINGER_DATA_DIR"]))
-        self.assertEqual(len(files), 3, files)
-        self.assertTrue(all(
-            "baseline.unreadable-" in f for f in files
-            if not f.startswith("baseline.json")), files)
+        data_dir = os.environ["GINGER_DATA_DIR"]
+        files = sorted(os.listdir(data_dir))
+        # Two quarantined files plus a fresh baseline.json and .bak.
+        self.assertEqual(len(files), 4, files)
+        moved = [f for f in files if "baseline.unreadable-" in f]
+        self.assertEqual(len(moved), 2, files)
+        # Both originals were kept, each with its own content, under
+        # distinct names.
+        contents = {}
+        for name in moved:
+            with open(os.path.join(data_dir, name)) as f:
+                contents[name] = f.read()
+        self.assertEqual(sorted(contents.values()),
+                         ["also not json", "not-json{"])
         import baseline
         loaded, used_backup = baseline.load()
         self.assertFalse(used_backup)
@@ -928,6 +1063,71 @@ class UISmokeTests(GingerTestBase):
         self.assertEqual(len(self.server.posts), 1)
         self.assertIn("original state", win.last_toast.get_title())
 
+    def undo_button_label(self, toast):
+        return toast.get_button_label() if toast is not None else None
+
+    def tier3_disconnect_win(self, baseline_entry):
+        """Window with docker-support connected (tier 3) and the given
+        baseline entry for firefox; disconnect it and finish."""
+        conns = copy.deepcopy(CONNECTIONS)
+        conns["slots"] = list(conns["slots"]) + [
+            {"snap": "snapd", "slot": "docker-support",
+             "interface": "docker-support", "connections": []}]
+        conns["established"].append({
+            "slot": {"snap": "snapd", "slot": "docker-support"},
+            "plug": {"snap": "firefox", "plug": "docker-support"},
+            "interface": "docker-support", "manual": True})
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = conns
+        self.write_baseline("firefox", baseline_entry)
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list,
+                             win.snaps_list.get_row_at_index(0))
+        row = self.switch_row(win, "docker-support")
+        self.assertTrue(row.get_active())
+        self.toggle_switch(row)
+        self.confirm_alert("Disconnect", "confirm")
+        self.wait_change_finished(win)
+        self.assertIn("Disconnected docker-support",
+                      win.last_toast.get_title())
+        return win
+
+    def test_undo_shown_after_tier1_disconnect(self):
+        win = self.load_win()
+        row = self.switch_row(win, "camera")
+        self.toggle_switch(row)
+        self.confirm_alert("Disconnect", "confirm")
+        self.wait_change_finished(win)
+        self.assertEqual(self.undo_button_label(win.last_toast), "Undo")
+
+    def test_undo_shown_after_tier2_disconnect(self):
+        win = self.load_win()
+        row = self.switch_row(win, "removable-media")
+        self.toggle_switch(row)
+        self.confirm_alert("Disconnect", "confirm")
+        self.wait_change_finished(win)
+        self.assertEqual(self.undo_button_label(win.last_toast), "Undo")
+
+    def test_undo_shown_after_tier3_disconnect_when_authorized(self):
+        entry = self.baseline_for(CONNECTIONS)
+        entry["connected"].append({
+            "plug": "docker-support", "slot_snap": "snapd",
+            "slot": "docker-support", "interface": "docker-support"})
+        win = self.tier3_disconnect_win(entry)
+        self.assertEqual(self.undo_button_label(win.last_toast), "Undo")
+
+    def test_no_undo_after_tier3_disconnect_without_baseline_entry(self):
+        win = self.tier3_disconnect_win(self.baseline_for(CONNECTIONS))
+        self.assertNotEqual(self.undo_button_label(win.last_toast), "Undo")
+
+    def test_no_undo_after_tier3_disconnect_without_stored_interface(self):
+        entry = self.baseline_for(CONNECTIONS)
+        entry["connected"].append({
+            "plug": "docker-support", "slot_snap": "snapd",
+            "slot": "docker-support"})
+        win = self.tier3_disconnect_win(entry)
+        self.assertNotEqual(self.undo_button_label(win.last_toast), "Undo")
+
     def rename_plug(self, conns, plug, rename):
         for p in conns["plugs"]:
             if p["plug"] == plug:
@@ -1027,20 +1227,17 @@ class RestoreTests(GingerTestBase):
         super().setUp()
         self.server.converge = True
 
-    def baseline_for(self, connections, snap="firefox"):
-        import baseline as baseline_mod
-        return baseline_mod.entry_for(connections, snap)
-
-    def write_baseline(self, snap, entry):
-        import json as json_mod
-        path = os.path.join(os.environ["GINGER_DATA_DIR"],
-                            "baseline.json")
-        data = {"version": 2, "snaps": {snap: entry}}
-        os.makedirs(os.environ["GINGER_DATA_DIR"], exist_ok=True)
-        with open(path, "w") as f:
-            json_mod.dump(data, f)
-        with open(path + ".bak", "w") as f:
-            json_mod.dump(data, f)
+    def tearDown(self):
+        # A test that leaves a batch running must fail itself instead
+        # of poisoning later tests through the shared mock server.
+        try:
+            self.run_until(lambda: self.win.restore_batch is None
+                           and not self.win.busy)
+            self.assertIsNone(self.win.restore_batch,
+                              "restore batch left running")
+            self.assertFalse(self.win.busy, "window left busy")
+        finally:
+            super().tearDown()
 
     def changed_connections(self):
         # Relative to CONNECTIONS: camera disconnected (was in the
@@ -1104,7 +1301,7 @@ class RestoreTests(GingerTestBase):
         row = win.snaps_list.get_row_at_index(0)
         icons = [w for w in self.walk(row)
                  if isinstance(w, Gtk.Image)
-                 and w.get_icon_name() == "document-modified-symbolic"]
+                 and w.get_icon_name() == "document-edit-symbolic"]
         self.assertTrue(icons)
         self.assertFalse(win.only_changed)
         win.changed_check.set_active(True)
@@ -1176,6 +1373,13 @@ class RestoreTests(GingerTestBase):
                          "expected exactly one restore alert")
         return alert[0]
 
+    def answer_restore_alert(self, win, alert, response):
+        # AlertDialog.choose completes on a later main-loop iteration;
+        # wait for on_restore_confirmed before asserting or waiting on
+        # later state.
+        alert.emit("response", response)
+        self.run_until(lambda: not win.confirming)
+
     OUTSIDE_GINGER_SENTENCE = (
         "Restore also reverts changes made outside Ginger since the "
         "saved original state (for example with snap connect).")
@@ -1195,9 +1399,9 @@ class RestoreTests(GingerTestBase):
         self.assertEqual(body.count(self.OUTSIDE_GINGER_SENTENCE), 1)
         self.assertIn("Connect firefox:camera", body)
         self.assertIn("Disconnect firefox:audio-record", body)
-        self.assertIn("This will ask for approval 2 times.", body)
+        self.assertIn("This may ask for approval up to 2 times.", body)
         self.assertFalse(alert.get_body_use_markup())
-        alert.emit("response", "cancel")
+        self.answer_restore_alert(win, alert, "cancel")
         self.assertEqual(self.server.posts, [])
 
     def test_confirmation_dialog_contents_all_snaps(self):
@@ -1207,15 +1411,15 @@ class RestoreTests(GingerTestBase):
         alert = self.restore_alert(win)
         body = alert.get_body()
         self.assertEqual(body.count(self.OUTSIDE_GINGER_SENTENCE), 1)
-        self.assertIn("This will ask for approval 2 times.", body)
-        alert.emit("response", "cancel")
+        self.assertIn("This may ask for approval up to 2 times.", body)
+        self.answer_restore_alert(win, alert, "cancel")
 
     def test_restore_batch_success_and_convergence(self):
         win = self.base_conns_with_baseline(self.changed_connections())
         win.open_restore_page()
         win.restore_all_button.emit("clicked")
         alert = self.restore_alert(win)
-        alert.emit("response", "restore")
+        self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         self.assertEqual(len(self.server.posts), 2)
@@ -1239,15 +1443,24 @@ class RestoreTests(GingerTestBase):
                               "kind": "auth-cancelled"}})]
         win.restore_all_button.emit("clicked")
         alert = self.restore_alert(win)
-        toast_before = win.last_toast
-        alert.emit("response", "restore")
+        self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         self.assertEqual(len(self.server.posts), 1)
-        # Silent: the last toast is still the step-1 toast.
-        self.assertIn("Restoring: step 1 of 2",
-                      toast_before.get_title())
-        self.assertIs(win.last_toast, toast_before)
+        # No error alert; a plain cancel toast (no step finished). The
+        # just-answered confirmation dialog may still be in the tree
+        # while it closes; anything else mapped is a real error alert.
+        self.run_until(lambda: all(
+            d is alert or not d.get_visible()
+            for w in Gtk.Window.list_toplevels()
+            for d in self.walk(w) if isinstance(d, Adw.AlertDialog)))
+        others = [d for w in Gtk.Window.list_toplevels()
+                  for d in self.walk(w)
+                  if isinstance(d, Adw.AlertDialog) and d is not alert
+                  and d.get_visible()]
+        self.assertEqual([d.get_heading() for d in others], [])
+        self.assertIsNotNone(win.last_toast)
+        self.assertEqual(win.last_toast.get_title(), "Restore cancelled")
 
     def test_restore_error_mid_batch_reports_failed_count(self):
         # Steps 1 and 2 succeed; step 3 fails. The failed step is not
@@ -1273,7 +1486,7 @@ class RestoreTests(GingerTestBase):
              "err": "snapd exploded", "summary": "failed"}]
         win.restore_all_button.emit("clicked")
         alert = self.restore_alert(win)
-        alert.emit("response", "restore")
+        self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None)
         self.assertEqual(len(self.server.posts), 3)
         self.assertIn("Stopped after 2 of 3 steps",
@@ -1349,7 +1562,7 @@ class RestoreTests(GingerTestBase):
         win.restore_all_button.emit("clicked")
         alert = self.restore_alert(win)
         self.assertIn(plug, alert.get_body())
-        alert.emit("response", "cancel")
+        self.answer_restore_alert(win, alert, "cancel")
 
     def test_restore_window_closing_mid_batch(self):
         win = self.base_conns_with_baseline(self.changed_connections())
@@ -1361,6 +1574,9 @@ class RestoreTests(GingerTestBase):
         win.change_done("connect", "firefox", "camera",
                         ("snapd", "camera"), changes.OUTCOME_DONE, None)
         self.assertIsNone(win.last_toast)
+        # The closing window correctly leaves the batch; reset it so
+        # the tearDown guard does not fire for this test.
+        win.restore_batch = None
 
     def test_restore_page_pickable(self):
         win = self.base_conns_with_baseline(self.changed_connections())
@@ -1384,13 +1600,13 @@ class RestoreTests(GingerTestBase):
         win.open_restore_page()
         self.assertFalse(win.restore_selected_button.get_sensitive())
         check = win.restore_checks["firefox"]
-        check.emit("toggled")
+        check.set_active(True)
         self.assertTrue(win.restore_selected_button.get_sensitive())
         # Clicking the button opens the confirmation dialog.
         win.restore_selected_button.emit("clicked")
         alert = self.restore_alert(win)
         self.assertIn("Connect firefox:camera", alert.get_body())
-        alert.emit("response", "cancel")
+        self.answer_restore_alert(win, alert, "cancel")
         check.set_active(False)
         self.assertFalse(win.restore_selected_button.get_sensitive())
 
@@ -1400,6 +1616,10 @@ class RestoreTests(GingerTestBase):
         self.run_until(lambda: win.get_mapped()
                        and win.restore_rows.get_width() > 1
                        and win.restore_selected_button.get_width() > 1)
+        # PickFlags.DEFAULT skips insensitive widgets: the Restore
+        # selected button is insensitive until a check is active.
+        win.restore_checks["firefox"].set_active(True)
+        self.assertTrue(win.restore_selected_button.get_sensitive())
         for target in (win.restore_checks["firefox"],
                        win.restore_selected_button,
                        win.restore_all_button):
@@ -1416,7 +1636,106 @@ class RestoreTests(GingerTestBase):
             self.assertTrue(widget is target or widget.is_ancestor(target),
                             "picked %s, expected %s" % (widget, target))
 
+    def tier3_win(self, baseline_entry):
+        """Window whose docker-support plug (tier 3) is disconnected
+        and has a slot; baseline_entry is written for firefox."""
+        conns = copy.deepcopy(CONNECTIONS)
+        conns["slots"] = list(conns["slots"]) + [
+            {"snap": "snapd", "slot": "docker-support",
+             "interface": "docker-support", "connections": []}]
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = conns
+        self.write_baseline("firefox", baseline_entry)
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list,
+                             win.snaps_list.get_row_at_index(0))
+        return win
+
+    def tier3_baseline_entry(self):
+        entry = self.baseline_for(CONNECTIONS)
+        entry["connected"].append({
+            "plug": "docker-support", "slot_snap": "snapd",
+            "slot": "docker-support", "interface": "docker-support"})
+        return entry
+
+    def test_restore_reconnects_authorized_tier3(self):
+        # In the baseline (with interface), now disconnected: Restore
+        # sends the connect after the strong-warning dialog, counted in
+        # the approval total.
+        win = self.tier3_win(self.tier3_baseline_entry())
+        win.open_restore_page()
+        win.restore_all_button.emit("clicked")
+        alert = self.restore_alert(win)
+        body = alert.get_body()
+        self.assertIn("Connect firefox:docker-support", body)
+        self.assertIn("privileged interface: grants broad system "
+                       "access", body)
+        self.assertIn("This may ask for approval once.", body)
+        self.answer_restore_alert(win, alert, "restore")
+        self.run_until(lambda: win.restore_batch is None
+                       and win.busy is False)
+        self.assertEqual(len(self.server.posts), 1)
+        path, posted, allowed = self.server.posts[0]
+        self.assertEqual(posted["action"], "connect")
+        self.assertEqual(posted["plugs"][0]["plug"], "docker-support")
+        self.assertTrue(allowed)
+
+    def test_restore_never_connects_unauthorized_tier3(self):
+        # In the baseline but without the stored interface (old file):
+        # Not restored, nothing sent, even though the plug and slot
+        # exist. A plug absent from the baseline produces no diff at
+        # all, so Restore never even offers it.
+        entry = self.baseline_for(CONNECTIONS)
+        entry["connected"].append({
+            "plug": "docker-support", "slot_snap": "snapd",
+            "slot": "docker-support"})
+        win = self.tier3_win(entry)
+        win.open_restore_page()
+        win.restore_all_button.emit("clicked")
+        alert = self.restore_alert(win)
+        self.assertIn("Not restored by Ginger", alert.get_body())
+        self.assertNotIn("ask for approval", alert.get_body())
+        self.answer_restore_alert(win, alert, "ok")
+        self.assertIsNone(win.restore_batch)
+        self.assertEqual(self.server.posts, [])
+
+    def test_switch_insensitive_for_tier3_even_when_in_baseline(self):
+        win = self.tier3_win(self.tier3_baseline_entry())
+        row = self.switch_row(win, "docker-support")
+        self.assertFalse(row.get_active())
+        self.assertFalse(row.get_sensitive())
+        self.assertIn("Connect not offered", row.get_subtitle())
+
+    def test_tier3_disconnect_still_works(self):
+        # A connected tier 3 plug can be disconnected; the reconnect
+        # through Undo is refused (no baseline entry).
+        conns = copy.deepcopy(CONNECTIONS)
+        conns["slots"] = list(conns["slots"]) + [
+            {"snap": "snapd", "slot": "docker-support",
+             "interface": "docker-support", "connections": []}]
+        conns["established"].append({
+            "slot": {"snap": "snapd", "slot": "docker-support"},
+            "plug": {"snap": "firefox", "plug": "docker-support"},
+            "interface": "docker-support", "manual": True})
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = conns
+        self.write_baseline("firefox", self.baseline_for(CONNECTIONS))
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list,
+                             win.snaps_list.get_row_at_index(0))
+        row = self.switch_row(win, "docker-support")
+        self.assertTrue(row.get_active())
+        self.toggle_switch(row)
+        self.confirm_alert("Disconnect", "confirm")
+        self.wait_change_finished(win)
+        self.assertEqual(len(self.server.posts), 1)
+        self.assertEqual(self.server.posts[0][1]["action"],
+                         "disconnect")
+        self.assertNotEqual(win.last_toast.get_button_label(), "Undo")
+
     def test_tier3_step_never_sent(self):
+        # Belt and braces: an unauthorized tier 3 step injected into a
+        # batch aborts it, nothing sent.
         win = self.base_conns_with_baseline(self.changed_connections())
         win.restore_batch = {"snaps": ["firefox"], "steps": [
             {"action": "connect", "plug_snap": "firefox",
@@ -1426,8 +1745,122 @@ class RestoreTests(GingerTestBase):
         self.assertIsNone(win.restore_batch)
         self.assertFalse(win.busy)
         self.assertEqual(self.server.posts, [])
-        self.assertIn("never connects",
+        self.assertIn("not authorized",
                       win.last_toast.get_title())
+
+    def test_only_tier3_difference_counts_as_changed(self):
+        # A snap whose only difference is a tier 3 plug whose
+        # authorization fails (old baseline entry, no stored interface)
+        # still shows banner, icon, Restore page row; the dialog has no
+        # steps and no approval line; nothing sent.
+        entry = self.baseline_for(CONNECTIONS)
+        entry["connected"].append({
+            "plug": "docker-support", "slot_snap": "snapd",
+            "slot": "docker-support"})
+        win = self.tier3_win(entry)
+        titles = [r.get_title() for r in
+                  self.walk(win.detail_bin.get_child())
+                  if isinstance(r, Adw.ActionRow)]
+        self.assertIn("This snap differs from its original state",
+                      titles)
+        rows = [r for r in win.walk(win.snaps_list)
+                if isinstance(r, Adw.ActionRow)]
+        self.assertEqual([r.get_title() for r in rows], ["firefox"])
+        icons = [s for s in win.walk(rows[0])
+                  if isinstance(s, Gtk.Image)
+                  and s.get_icon_name() == "document-edit-symbolic"]
+        self.assertEqual(len(icons), 1)
+        win.open_restore_page()
+        restore_rows = [r for r in win.walk(win.restore_rows)
+                        if isinstance(r, Adw.ActionRow)]
+        self.assertIn("firefox", [r.get_title()
+                                  for r in restore_rows])
+        win.restore_all_button.emit("clicked")
+        alert = self.restore_alert(win)
+        body = alert.get_body()
+        self.assertNotIn("ask for approval", body)
+        self.assertIn("Not restored by Ginger", body)
+        self.answer_restore_alert(win, alert, "ok")
+        self.assertIsNone(win.restore_batch)
+        self.assertEqual(self.server.posts, [])
+
+    def tier3_batch_win(self):
+        """Window whose baseline authorizes a tier 3 reconnect; the
+        restore batch is exactly one connect step."""
+        win = self.tier3_win(self.tier3_baseline_entry())
+        win.open_restore_page()
+        win.restore_all_button.emit("clicked")
+        alert = self.restore_alert(win)
+        return win, alert
+
+    def test_tier3_auth_cancelled_stops_batch_silently(self):
+        win, alert = self.tier3_batch_win()
+        self.server.interface_responses = [
+            (403, {"type": "error", "status-code": 403,
+                   "result": {"message": "cancelled",
+                              "kind": "auth-cancelled"}})]
+        self.answer_restore_alert(win, alert, "restore")
+        self.run_until(lambda: win.restore_batch is None
+                       and win.busy is False)
+        self.assertEqual(len(self.server.posts), 1)
+        # No error alert; a plain cancel toast (no step finished). The
+        # just-answered confirmation dialog may still be in the tree
+        # while it closes; anything else mapped is a real error alert.
+        self.run_until(lambda: all(
+            d is alert or not d.get_visible()
+            for w in Gtk.Window.list_toplevels()
+            for d in self.walk(w) if isinstance(d, Adw.AlertDialog)))
+        others = [d for w in Gtk.Window.list_toplevels()
+                  for d in self.walk(w)
+                  if isinstance(d, Adw.AlertDialog) and d is not alert
+                  and d.get_visible()]
+        self.assertEqual([d.get_heading() for d in others], [])
+        self.assertIsNotNone(win.last_toast)
+        self.assertEqual(win.last_toast.get_title(), "Restore cancelled")
+
+    def test_tier3_error_mid_batch_reports_count(self):
+        win, alert = self.tier3_batch_win()
+        self.server.change_script["1"] = [
+            {"status": "Doing", "ready": False, "err": None},
+            {"status": "Error", "ready": True,
+             "err": "snapd refused", "summary": "failed"}]
+        self.answer_restore_alert(win, alert, "restore")
+        self.run_until(lambda: win.restore_batch is None)
+        self.assertEqual(len(self.server.posts), 1)
+        self.assertIn("Stopped after 0 of 1 steps",
+                      win.last_toast.get_title())
+        self.assertIn("snapd refused", win.last_toast.get_title())
+
+    def test_tier3_markup_names_render_literally(self):
+        plug = "<b>x</b>&amp;"
+        entry = self.baseline_for(CONNECTIONS)
+        entry["connected"].append({
+            "plug": plug, "slot_snap": "snapd", "slot": "docker-support",
+            "interface": "docker-support"})
+        conns = copy.deepcopy(CONNECTIONS)
+        conns["plugs"].append({"snap": "firefox", "plug": plug,
+                               "interface": "docker-support",
+                               "apps": [], "connections": []})
+        conns["slots"].append({"snap": "snapd", "slot": "docker-support",
+                               "interface": "docker-support",
+                               "connections": []})
+        self.server.snaps = [dict(SNAP_APP)]
+        self.server.default_connections = conns
+        self.write_baseline("firefox", entry)
+        win = self.make_window()
+        win.on_snap_selected(win.snaps_list,
+                             win.snaps_list.get_row_at_index(0))
+        win.open_restore_page()
+        win.restore_all_button.emit("clicked")
+        alert = self.restore_alert(win)
+        self.assertIn(plug, alert.get_body())
+        self.assertFalse(alert.get_body_use_markup())
+        self.answer_restore_alert(win, alert, "restore")
+        self.run_until(lambda: win.restore_batch is None
+                       and win.busy is False)
+        self.assertEqual(len(self.server.posts), 1)
+        self.assertEqual(self.server.posts[0][1]["plugs"][0]["plug"],
+                         plug)
 
     def test_second_confirm_restore_blocked_while_dialog_open(self):
         win = self.base_conns_with_baseline(self.changed_connections())
@@ -1441,7 +1874,7 @@ class RestoreTests(GingerTestBase):
                   if isinstance(d, Adw.AlertDialog)
                   and "Restore original connections" in d.get_heading()]
         self.assertEqual(len(alerts), 1)
-        alert.emit("response", "cancel")
+        self.answer_restore_alert(win, alert, "cancel")
         self.assertFalse(win.confirming)
 
     def test_stale_steps_skipped(self):
@@ -1459,13 +1892,41 @@ class RestoreTests(GingerTestBase):
             "plug": {"snap": "firefox", "plug": "camera"},
             "interface": "camera", "manual": True})
         win.load()
-        alert.emit("response", "restore")
+        self.answer_restore_alert(win, alert, "restore")
         self.run_until(lambda: win.restore_batch is None
                        and win.busy is False)
         posts = [body["action"] for _, body, _ in self.server.posts]
         self.assertEqual(posts, ["disconnect"])
         self.assertEqual(self.server.posts[0][1]["plugs"][0]["plug"],
                          "audio-record")
+
+    def test_disconnect_step_stale_when_slot_moved(self):
+        # The step targets snapd:audio-record; behind the dialog the
+        # plug is connected to a different slot, so the exact triple
+        # no longer matches, the step is skipped, and nothing is sent.
+        # (Camera is reconnected too, so its connect step is also
+        # stale and the batch has nothing to run.)
+        win = self.base_conns_with_baseline(self.changed_connections())
+        win.open_restore_page()
+        win.restore_all_button.emit("clicked")
+        alert = self.restore_alert(win)
+        conns = self.server.default_connections
+        conns["established"].append({
+            "slot": {"snap": "snapd", "slot": "camera"},
+            "plug": {"snap": "firefox", "plug": "camera"},
+            "interface": "camera", "manual": True})
+        conns["established"] = [
+            e for e in conns["established"]
+            if e["plug"]["plug"] != "audio-record"]
+        conns["established"].append({
+            "slot": {"snap": "other", "slot": "audio-record"},
+            "plug": {"snap": "firefox", "plug": "audio-record"},
+            "interface": "audio-record", "manual": True})
+        win.load()
+        self.answer_restore_alert(win, alert, "restore")
+        self.run_until(lambda: win.restore_batch is None
+                       and win.busy is False)
+        self.assertEqual(self.server.posts, [])
 
     def test_dialog_with_only_not_restored(self):
         # The baseline's camera plug is now tier-3 docker-support and
@@ -1498,7 +1959,7 @@ class RestoreTests(GingerTestBase):
         body = alert.get_body()
         self.assertNotIn("ask for approval", body)
         self.assertIn("Not restored by Ginger", body)
-        alert.emit("response", "ok")
+        self.answer_restore_alert(win, alert, "ok")
         self.assertIsNone(win.restore_batch)
         self.assertEqual(self.server.posts, [])
 

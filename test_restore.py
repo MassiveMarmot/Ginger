@@ -122,17 +122,71 @@ class ComputeDiffTests(unittest.TestCase):
         self.assertIn("slot not in current connections",
                       d["skipped"][0]["reason"])
 
-    def test_tier3_connect_not_a_step(self):
-        c = self.connections(
+    def tier3_conns(self):
+        return self.connections(
             plugs=[plug_entry("docker-support", interface="docker-support")],
             slots=[slot_entry("docker-support")])
-        d = self.diff(
-            baseline(("docker-support", "snapd", "docker-support")), c)
+
+    def tier3_base(self, interface="docker-support"):
+        entry = {"plug": "docker-support", "slot_snap": "snapd",
+                 "slot": "docker-support"}
+        if interface is not None:
+            entry["interface"] = interface
+        return {"connected": [entry]}
+
+    def test_tier3_reconnect_authorized_is_a_step(self):
+        d = self.diff(self.tier3_base(), self.tier3_conns())
+        self.assertEqual([(s["action"], s["plug"], s["tier"])
+                         for s in d["steps"]],
+                        [("connect", "docker-support", 3)])
+        self.assertEqual(d["not_restored"], [])
+
+    def test_tier3_connect_not_a_step(self):
+        # No stored interface: fail closed, never reconnected.
+        d = self.diff(self.tier3_base(interface=None), self.tier3_conns())
         self.assertEqual(d["steps"], [])
         self.assertEqual(len(d["not_restored"]), 1)
         self.assertEqual(d["not_restored"][0]["command"],
                          "snap connect firefox:docker-support "
                          "snapd:docker-support")
+
+    def test_tier3_interface_changed_since_capture_not_restored(self):
+        d = self.diff(self.tier3_base(interface="camera"),
+                      self.tier3_conns())
+        self.assertEqual(d["steps"], [])
+        self.assertEqual(len(d["not_restored"]), 1)
+
+    def test_tier3_slot_mismatch_not_restored(self):
+        d = self.diff(self.tier3_base(), self.tier3_conns())
+        # A different slot in the current response is not the baseline's
+        # slot: the reconnect targets snapd:docker-support but the plug
+        # is established on another slot.
+        c = self.tier3_conns()
+        c["established"].append(conn("docker-support", slot_snap="other",
+                                     slot="docker-support",
+                                     interface="docker-support",
+                                     manual=True))
+        d = self.diff(self.tier3_base(), c)
+        self.assertEqual([(s["action"], s["plug"]) for s in d["steps"]],
+                        [("disconnect", "docker-support"),
+                         ("connect", "docker-support")])
+
+    def test_tampered_baseline_tier3_slot_gone_is_skipped(self):
+        c = self.tier3_conns()
+        c["slots"] = []
+        d = self.diff(self.tier3_base(), c)
+        self.assertEqual(d["steps"], [])
+        self.assertEqual(len(d["skipped"]), 1)
+        self.assertIn("slot not in current connections",
+                      d["skipped"][0]["reason"])
+
+    def test_tampered_baseline_tier3_plug_gone_is_skipped(self):
+        c = self.connections(plugs=[], slots=[slot_entry("docker-support")])
+        d = self.diff(self.tier3_base(), c)
+        self.assertEqual(d["steps"], [])
+        self.assertEqual(len(d["skipped"]), 1)
+        self.assertIn("plug not in current connections",
+                      d["skipped"][0]["reason"])
 
     def test_tier2_connect_is_a_step_with_tier(self):
         c = self.connections(
@@ -180,7 +234,30 @@ class ComputeDiffTests(unittest.TestCase):
         self.assertIn("slot not in current connections",
                       d["skipped"][0]["reason"])
 
+    def test_mismatch_tier3_authorized_is_disconnect_then_connect(self):
+        # The plug is manually connected to another slot; an authorized
+        # baseline (stored interface) produces disconnect + connect.
+        c = self.connections(
+            established=[conn("docker-support", slot_snap="other",
+                              slot="docker-support",
+                              interface="docker-support", manual=True)],
+            plugs=[plug_entry("docker-support", interface="docker-support")],
+            slots=[slot_entry("docker-support", snap="other"),
+                   slot_entry("docker-support")])
+        d = self.diff(
+            {"connected": [
+                {"plug": "docker-support", "slot_snap": "snapd",
+                 "slot": "docker-support", "interface": "docker-support"}]},
+            c)
+        self.assertEqual([(s["action"], s["slot_snap"], s["tier"])
+                         for s in d["steps"]],
+                        [("disconnect", "other", 3),
+                         ("connect", "snapd", 3)])
+        self.assertEqual(d["not_restored"], [])
+
     def test_mismatch_tier3_goes_to_not_restored(self):
+        # Same mismatch but the baseline entry has no stored interface
+        # (old file): fail closed, never reconnected.
         c = self.connections(
             established=[conn("docker-support", slot_snap="other",
                               slot="docker-support",
@@ -239,6 +316,74 @@ class ComputeDiffTests(unittest.TestCase):
                                     ("connect", "snapd")])
 
 
+class MayReconnectTier3Tests(unittest.TestCase):
+    """The single tier 3 reconnect authorization: tier from the
+    interface (never the plug name), exact triple in the baseline,
+    stored interface must equal the current one (fail closed when
+    missing or changed)."""
+
+    def conns(self, interface="docker-support"):
+        return {
+            "established": [], "undesired": [],
+            "plugs": [plug_entry("docker-support",
+                                 interface=interface)],
+            "slots": [slot_entry("docker-support", interface=interface)],
+        }
+
+    def base(self, interface="docker-support"):
+        entry = {"plug": "docker-support", "slot_snap": "snapd",
+                 "slot": "docker-support"}
+        if interface is not None:
+            entry["interface"] = interface
+        return {"connected": [entry]}
+
+    def test_authorized_when_interface_matches(self):
+        self.assertTrue(restore.may_reconnect_tier3(
+            self.base("docker-support"), self.conns(),
+            "firefox", "docker-support", "snapd", "docker-support"))
+
+    def test_refused_without_stored_interface(self):
+        self.assertFalse(restore.may_reconnect_tier3(
+            self.base(None), self.conns(),
+            "firefox", "docker-support", "snapd", "docker-support"))
+
+    def test_refused_when_interface_changed_since_capture(self):
+        self.assertFalse(restore.may_reconnect_tier3(
+            self.base("camera"), self.conns(),
+            "firefox", "docker-support", "snapd", "docker-support"))
+
+    def test_tier_from_interface_not_plug_name(self):
+        # A plug named docker-support on a tier 1 interface is not
+        # tier 3; a plug named camera on a tier 3 interface is.
+        self.assertFalse(restore.may_reconnect_tier3(
+            self.base("camera"), self.conns("camera"),
+            "firefox", "docker-support", "snapd", "docker-support"))
+        self.assertTrue(restore.may_reconnect_tier3(
+            {"connected": [{"plug": "camera", "slot_snap": "snapd",
+                            "slot": "camera", "interface": "docker-support"}]},
+            {"established": [], "undesired": [],
+             "plugs": [plug_entry("camera", interface="docker-support")],
+             "slots": [slot_entry("camera", interface="docker-support")]},
+            "firefox", "camera", "snapd", "camera"))
+
+    def test_refused_when_not_in_baseline(self):
+        self.assertFalse(restore.may_reconnect_tier3(
+            {"connected": []}, self.conns(),
+            "firefox", "docker-support", "snapd", "docker-support"))
+
+    def test_refused_when_slot_gone(self):
+        c = self.conns()
+        c["slots"] = []
+        self.assertFalse(restore.may_reconnect_tier3(
+            self.base("docker-support"), c,
+            "firefox", "docker-support", "snapd", "docker-support"))
+
+    def test_refused_when_slot_differs(self):
+        self.assertFalse(restore.may_reconnect_tier3(
+            self.base("docker-support"), self.conns(),
+            "firefox", "docker-support", "snapd", "other"))
+
+
 class ChangedSnapsTests(unittest.TestCase):
     def test_changed_snaps_counts(self):
         connections = {
@@ -255,7 +400,9 @@ class ChangedSnapsTests(unittest.TestCase):
             "thunderbird": baseline(
                 ("removable-media", "snapd", "removable-media")),
         }
-        changed = restore.changed_snaps(baselines, connections)
+        changed = restore.changed_snaps(
+            baselines, {"firefox": connections,
+                        "thunderbird": connections})
         self.assertEqual(changed, {"firefox": 1, "thunderbird": 1})
 
     def test_unchanged_snap_absent(self):
@@ -264,7 +411,8 @@ class ChangedSnapsTests(unittest.TestCase):
             "undesired": [], "plugs": [plug_entry("camera")],
             "slots": [slot_entry("camera")]}
         baselines = {"firefox": baseline(("camera", "snapd", "camera"))}
-        self.assertEqual(restore.changed_snaps(baselines, connections), {})
+        self.assertEqual(restore.changed_snaps(
+            baselines, {"firefox": connections}), {})
 
 
 class EndToEndTests(unittest.TestCase):
@@ -295,7 +443,9 @@ class EndToEndTests(unittest.TestCase):
         for step in steps:
             outcome, _ = changes.run_change(
                 self.client, step["action"], step["plug_snap"],
-                step["plug"], step["slot_snap"], step["slot"])
+                step["plug"], step["slot_snap"], step["slot"],
+                baseline_entry=baselines.get(step["plug_snap"]),
+                current_connections=self.server.default_connections)
             self.assertEqual(outcome, changes.OUTCOME_DONE)
         return steps
 
@@ -317,7 +467,9 @@ class EndToEndTests(unittest.TestCase):
                 baselines[snap], self.server.default_connections, snap)
             self.assertEqual(diff["steps"], [])
         self.assertEqual(restore.changed_snaps(
-            baselines, self.server.default_connections), {})
+            baselines, {"firefox": self.server.default_connections,
+                        "thunderbird": self.server.default_connections}),
+            {})
 
     def test_restore_all_snaps_converges(self):
         self.server.default_connections = self.connections(
@@ -332,7 +484,8 @@ class EndToEndTests(unittest.TestCase):
             "thunderbird": baseline(),
         }
         changed = restore.changed_snaps(
-            baselines, self.server.default_connections)
+            baselines, {"firefox": self.server.default_connections,
+                        "thunderbird": self.server.default_connections})
         self.assertEqual(sorted(changed), ["firefox", "thunderbird"])
         self.run_batch(sorted(changed), baselines)
         for snap in baselines:
@@ -357,7 +510,9 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(len(steps), 2)
         outcome, _ = changes.run_change(
             self.client, steps[0]["action"], steps[0]["plug_snap"],
-            steps[0]["plug"], steps[0]["slot_snap"], steps[0]["slot"])
+            steps[0]["plug"], steps[0]["slot_snap"], steps[0]["slot"],
+            baseline_entry=baselines.get(steps[0]["plug_snap"]),
+            current_connections=self.server.default_connections)
         self.assertEqual(outcome, changes.OUTCOME_DONE)
         remaining = restore.compute_diff(
             baselines["firefox"], self.server.default_connections,

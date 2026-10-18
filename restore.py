@@ -41,6 +41,29 @@ def _slot_exists(connections, slot_snap, slot):
     return False
 
 
+def may_reconnect_tier3(baseline_entry, current_connections,
+                        plug_snap, plug, slot_snap, slot):
+    """True only for a tier-3 connect that puts back a connection the
+    baseline records as connected. The plug's interface must be tier 3
+    in current_connections["plugs"] (never the plug name), the exact
+    triple (plug, slot_snap, slot) must be in the baseline's connected
+    list with the same interface as the current plug (an entry without
+    a stored interface is never authorized), and the slot must exist in
+    the current response."""
+    interface = _interface_of(current_connections, plug_snap, plug)
+    if interfaces.tier_for(interface or "?") != 3:
+        return False
+    if not _slot_exists(current_connections, slot_snap, slot):
+        return False
+    for entry in (baseline_entry or {}).get("connected") or []:
+        if not isinstance(entry, dict):
+            continue
+        if (entry.get("plug"), entry.get("slot_snap"),
+                entry.get("slot")) == (plug, slot_snap, slot):
+            return entry.get("interface") == interface
+    return False
+
+
 def compute_diff(baseline_entry, current_connections, snap_name):
     """Ordered steps, skipped items with reasons, and not-restored
     tier-3 items. Baseline entries name plugs and slots; anything that
@@ -70,7 +93,10 @@ def compute_diff(baseline_entry, current_connections, snap_name):
                                 "reason": "slot not in current connections"})
                 continue
             tier = interfaces.tier_for(interface)
-            if tier == 3:
+            if tier == 3 \
+                    and not may_reconnect_tier3(
+                        baseline_entry, current_connections,
+                        snap_name, plug, slot_snap, slot):
                 not_restored.append(
                     {"snap": snap_name, "plug": plug,
                      "command": "snap connect %s:%s %s:%s"
@@ -95,7 +121,10 @@ def compute_diff(baseline_entry, current_connections, snap_name):
                 continue
             interface = _interface_of(current_connections, snap_name, plug)
             tier = interfaces.tier_for(interface or "?")
-            if tier == 3:
+            if tier == 3 \
+                    and not may_reconnect_tier3(
+                        baseline_entry, current_connections,
+                        snap_name, plug, slot_snap, slot):
                 not_restored.append(
                     {"snap": snap_name, "plug": plug,
                      "command": "snap connect %s:%s %s:%s"
@@ -124,11 +153,21 @@ def compute_diff(baseline_entry, current_connections, snap_name):
     return {"steps": steps, "skipped": skipped, "not_restored": not_restored}
 
 
-def changed_snaps(baselines, connections):
-    """{snap: step count} for snaps whose diff has steps."""
+def is_changed(baseline_entry, current_connections, snap_name):
+    """The one shared check: a snap is changed when its diff has at
+    least one step or at least one not-restored entry."""
+    diff = compute_diff(baseline_entry, current_connections, snap_name)
+    return bool(diff["steps"]) or bool(diff["not_restored"])
+
+
+def changed_snaps(baselines, connections_by_snap):
+    """{snap: step count} for snaps whose diff has steps or
+    not-restored entries (step count for the dialog, presence for
+    every 'changed' signal). connections_by_snap is the per-snap map."""
     changed = {}
     for snap, entry in baselines.items():
-        diff = compute_diff(entry, connections, snap)
-        if diff["steps"]:
+        if is_changed(entry, connections_by_snap.get(snap) or {}, snap):
+            diff = compute_diff(entry,
+                                connections_by_snap.get(snap) or {}, snap)
             changed[snap] = len(diff["steps"])
     return changed

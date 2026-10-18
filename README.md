@@ -62,8 +62,9 @@ flatpak override --user --nofilesystem=/run/snapd.socket io.github.massivemarmot
 ```
 
 Reading connections needs no authorization. Every change — a connect or a
-disconnect — triggers a polkit approval dialog shown by the system, once per
-change. Ginger cannot bypass it.
+disconnect — may trigger a polkit approval dialog shown by the system; polkit
+may cache an approval for a few minutes, so consecutive changes can share
+one approval, but each change can ask. Ginger cannot bypass it.
 
 Ginger makes no network connections, sends no telemetry, and logs nothing
 about snap or plug names.
@@ -75,7 +76,10 @@ about snap or plug names.
   `ssh-keys`) asks for confirmation.
 - Unknown interfaces are treated as sensitive.
 - Some interfaces (for example `docker-support` and `snapd-control`) are
-  never connected by Ginger; they are shown and can be disconnected.
+  privileged: the Permissions switch never connects them, and Ginger
+  connects one only to put back a connection the saved original state
+  records as connected (Restore and Undo), with a strong warning and the
+  usual approval. A connection can always be disconnected.
 - Disconnecting some interfaces (`desktop`, `wayland`, `x11`, `opengl`,
   `network`, `audio-playback`) can stop an app from working or prevent it
   from starting; the confirmation says so.
@@ -83,8 +87,8 @@ about snap or plug names.
 ## Saved original state
 
 On first sight of each snap, Ginger saves which of that snap's plugs were
-connected, in `baseline.json` in the app's own data directory, with a backup
-copy `baseline.json.bak`. Ginger never deletes or overwrites an entry; the
+connected, and on which interface, in `baseline.json` in the app's own data
+directory, with a backup copy `baseline.json.bak`. Ginger never deletes or overwrites an entry; the
 files are rewritten only to add entries for snaps it sees for the first time.
 
 If the main file becomes unreadable but the backup is valid, Ginger uses the

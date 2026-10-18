@@ -50,10 +50,13 @@ def _valid_entry(entry):
     if not isinstance(connected, list):
         return False
     for c in connected:
-        if not isinstance(c, dict) or set(c) != {"plug", "slot_snap",
-                                                 "slot"} \
+        if not isinstance(c, dict) or not set(c) <= {"plug", "slot_snap",
+                                                    "slot", "interface"} \
+                or not {"plug", "slot_snap", "slot"} <= set(c) \
                 or not all(isinstance(c[k], str) for k in
                            ("plug", "slot_snap", "slot")):
+            return False
+        if "interface" in c and not isinstance(c["interface"], str):
             return False
     return True
 
@@ -137,6 +140,7 @@ def entry_for(connections, snap):
             "plug": str(c["plug"].get("plug") or "?"),
             "slot_snap": str(slot.get("snap") or "?"),
             "slot": str(slot.get("slot") or "?"),
+            "interface": str(c.get("interface") or "?"),
         })
     connected.sort(key=lambda c: c["plug"])
     return {"connected": connected}
@@ -151,15 +155,33 @@ def capture_new(existing, connections_by_snap):
     return new
 
 
+def _quarantine_target(directory, timestamp, suffix):
+    """A free target name: never overwrite an existing file, so two
+    quarantines in the same second get distinct names. The number is
+    inserted before the extension so names keep ending in .json."""
+    base = "baseline.unreadable-%s.%s" % (timestamp, suffix)
+    name = base
+    n = 1
+    stem, dot, ext = base.rpartition(".")
+    while os.path.exists(os.path.join(directory, name)):
+        name = "%s-%d.%s" % (stem, n, ext)
+        n += 1
+    return os.path.join(directory, name)
+
+
 def quarantine_unreadable(timestamp):
     """Move an unreadable baseline and its backup out of the way;
-    nothing is ever deleted."""
+    nothing is ever deleted or overwritten. Both files are kept under
+    distinct names; the actual final paths are returned."""
     moved = []
-    for path in (_baseline_path(), _backup_path()):
+    for path, suffix in ((_baseline_path(), "json"),
+                        (_backup_path(), "bak.json")):
         if os.path.exists(path):
-            target = os.path.join(
-                os.path.dirname(path),
-                "baseline.unreadable-%s.json" % timestamp)
-            os.replace(path, target)
+            target = _quarantine_target(os.path.dirname(path),
+                                        timestamp, suffix)
+            # The target was free a moment ago; os.rename would
+            # silently overwrite on Linux if it was taken in between,
+            # but the window is negligible.
+            os.rename(path, target)
             moved.append(target)
     return moved

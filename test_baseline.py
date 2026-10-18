@@ -79,9 +79,37 @@ class BaselineTests(unittest.TestCase):
                 established("network")]},
             "firefox")
         self.assertEqual(entry, {"connected": [
-            {"plug": "camera", "slot_snap": "core24", "slot": "cam"},
-            {"plug": "network", "slot_snap": "snapd", "slot": "network"},
+            {"plug": "camera", "slot_snap": "core24", "slot": "cam",
+             "interface": "camera"},
+            {"plug": "network", "slot_snap": "snapd", "slot": "network",
+             "interface": "camera"},
         ]})
+
+    def test_new_entries_carry_interface(self):
+        entry = baseline.entry_for(
+            {"established": [established("camera",
+                                          interface="docker-support")]},
+            "firefox")
+        self.assertEqual(entry["connected"][0]["interface"],
+                         "docker-support")
+
+    def test_old_file_without_interface_loads(self):
+        self.write_raw({"version": baseline.BASELINE_VERSION,
+                        "snaps": {"firefox": {"connected": [
+                            {"plug": "camera", "slot_snap": "snapd",
+                             "slot": "camera"}]}}})
+        loaded, _ = baseline.load()
+        self.assertEqual(loaded["firefox"]["connected"][0]["plug"],
+                         "camera")
+        self.assertNotIn("interface", loaded["firefox"]["connected"][0])
+
+    def test_interface_must_be_string_when_present(self):
+        self.write_raw({"version": baseline.BASELINE_VERSION,
+                        "snaps": {"firefox": {"connected": [
+                            {"plug": "camera", "slot_snap": "snapd",
+                             "slot": "camera", "interface": 3}]}}})
+        with self.assertRaises(baseline.BaselineError):
+            baseline.load()
 
     def test_corrupt_file_raises(self):
         with open(self.path(), "w") as f:
@@ -178,17 +206,50 @@ class BaselineTests(unittest.TestCase):
         with open(self.path() + ".bak") as f:
             self.assertEqual(f.read(), "also not json")
 
-    def test_quarantine_moves_never_deletes(self):
-        baseline.save_snaps({"firefox": baseline.entry_for(
-            {"established": []}, "firefox")})
+    def test_quarantine_keeps_both_files_distinct(self):
+        # Different contents so an overwrite of one by the other is
+        # detectable.
+        with open(self.path(), "w") as f:
+            f.write("main-broken")
+        with open(self.path() + ".bak", "w") as f:
+            f.write("bak-broken")
         moved = baseline.quarantine_unreadable("20260101-000000")
         self.assertEqual(len(moved), 2)
+        self.assertNotEqual(moved[0], moved[1])
         self.assertFalse(os.path.exists(self.path()))
         self.assertFalse(os.path.exists(self.path() + ".bak"))
-        for target in moved:
-            self.assertTrue(os.path.exists(target))
+        self.assertTrue(os.path.exists(moved[0]))
+        self.assertTrue(os.path.exists(moved[1]))
         self.assertTrue(all(
             "baseline.unreadable-20260101-000000" in p for p in moved))
+        with open(moved[0]) as f:
+            self.assertEqual(f.read(), "main-broken")
+        with open(moved[1]) as f:
+            self.assertEqual(f.read(), "bak-broken")
+
+    def test_quarantine_same_timestamp_twice_never_overwrites(self):
+        with open(self.path(), "w") as f:
+            f.write("first-main")
+        with open(self.path() + ".bak", "w") as f:
+            f.write("first-bak")
+        first = baseline.quarantine_unreadable("20260101-000000")
+        with open(self.path(), "w") as f:
+            f.write("second-main")
+        with open(self.path() + ".bak", "w") as f:
+            f.write("second-bak")
+        second = baseline.quarantine_unreadable("20260101-000000")
+        self.assertEqual(len(first), 2)
+        self.assertEqual(len(second), 2)
+        self.assertNotEqual(set(first), set(second))
+        # The first pair is untouched; the second pair has new names.
+        with open(first[0]) as f:
+            self.assertEqual(f.read(), "first-main")
+        with open(first[1]) as f:
+            self.assertEqual(f.read(), "first-bak")
+        with open(second[0]) as f:
+            self.assertEqual(f.read(), "second-main")
+        with open(second[1]) as f:
+            self.assertEqual(f.read(), "second-bak")
 
     def test_no_delete_function_exists(self):
         root = os.path.dirname(os.path.abspath(baseline.__file__))
