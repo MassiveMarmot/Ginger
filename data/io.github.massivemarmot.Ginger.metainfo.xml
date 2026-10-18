@@ -16,8 +16,18 @@
   </developer>
   <url type="homepage">https://github.com/MassiveMarmot/Ginger</url>
   <url type="bugtracker">https://github.com/MassiveMarmot/Ginger</url>
+  <categories>
+    <category>System</category>
+    <category>Utility</category>
+  </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.0" date="2026-10-18">
+      <description>
+        <p>Restore to the saved original state; tier 3 baseline-only
+        reconnect; permissions per snap.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-10-05"/>
   </releases>
 </component>

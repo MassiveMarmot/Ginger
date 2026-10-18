@@ -6,11 +6,11 @@ thing as `snap connections`, `snap connect` and `snap disconnect`.
 
 ## Status
 
-Version 0.1.0. Working now: listing snaps, showing each plug and its
-connection state, connecting and disconnecting with confirmation, an undo
-toast after each change, and a saved original state of every snap's
-connections. Restore (returning a snap to its saved state) is planned and
-not yet available.
+Version 0.2.0. Working now: listing snaps with their connected and
+available counts, permissions per snap with switches, confirmations by
+danger tier, an undo toast after each change, a saved original state of
+every snap's connections, and Restore — returning one snap, selected
+snaps or all snaps to their saved state.
 
 ## Requirements
 
@@ -28,18 +28,17 @@ flatpak-builder --user --install --force-clean build-dir io.github.massivemarmot
 To produce a shareable bundle:
 
 ```sh
-flatpak build-bundle ~/.local/share/flatpak ginger-0.1.0.flatpak io.github.massivemarmot.Ginger
+flatpak build-bundle ~/.local/share/flatpak ginger-0.2.0.flatpak io.github.massivemarmot.Ginger
 ```
 
 Install a bundle with:
 
 ```sh
-flatpak install --user ginger-0.1.0.flatpak
+flatpak install --user ginger-0.2.0.flatpak
 flatpak run io.github.massivemarmot.Ginger
 ```
 
-These commands were not executed in the development sandbox (no Flatpak
-there); they follow the manifest and the Flatpak command reference.
+TODO: Build commands verified on the maintainer's VM: <date>
 
 ## How it works, and the permission it needs
 
@@ -87,9 +86,14 @@ about snap or plug names.
 ## Saved original state
 
 On first sight of each snap, Ginger saves which of that snap's plugs were
-connected, and on which interface, in `baseline.json` in the app's own data
-directory, with a backup copy `baseline.json.bak`. Ginger never deletes or overwrites an entry; the
-files are rewritten only to add entries for snaps it sees for the first time.
+connected, and on which interface, in `baseline.json` inside the
+Flatpak's app data at `~/.var/app/io.github.massivemarmot.Ginger/data/ginger/`,
+with a mirror copy `baseline.json.bak` rewritten together with it. Ginger
+never deletes or overwrites an entry; the files are rewritten only to add
+entries for snaps it sees for the first time.
+
+Restore returns a snap to its saved state, including changes made outside
+Ginger since the saved state was taken (for example with `snap connect`).
 
 If the main file becomes unreadable but the backup is valid, Ginger uses the
 backup and says so. If both are unreadable, Ginger blocks all changes and
@@ -111,6 +115,8 @@ saved state. "Original" means "before Ginger", not snapd's own defaults.
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+The build spec and plan live in [docs/SPEC.md](docs/SPEC.md).
 
 ## Development
 

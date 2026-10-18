@@ -1,10 +1,12 @@
 app-id: io.github.massivemarmot.Ginger
 runtime: org.gnome.Platform
-runtime-version: "49"
+runtime-version: "50"
 sdk: org.gnome.Sdk
 command: ginger
 # The only privilege is read/write access to the snapd socket.
-# Ginger uses it to list snaps and review their interface connections.
+# Reads need no authorization. Every change needs the user to approve
+# a polkit dialog shown by snapd; polkit may cache an approval for a
+# few minutes. Ginger cannot bypass it.
 finish-args:
   - --socket=wayland
   - --filesystem=/run/snapd.socket
@@ -12,7 +14,7 @@ modules:
   - name: ginger
     buildsystem: simple
     build-commands:
-      - install -Dm644 -t /app/share/ginger main.py snapd_client.py
+      - install -Dm644 -t /app/share/ginger main.py snapd_client.py baseline.py changes.py interfaces.py restore.py
       - install -Dm755 ginger-launcher /app/bin/ginger
       - install -Dm644 data/io.github.massivemarmot.Ginger.desktop /app/share/applications/io.github.massivemarmot.Ginger.desktop
       - install -Dm644 data/io.github.massivemarmot.Ginger.metainfo.xml /app/share/metainfo/io.github.massivemarmot.Ginger.metainfo.xml
