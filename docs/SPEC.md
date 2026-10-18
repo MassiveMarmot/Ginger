@@ -32,7 +32,7 @@ Ginger is a GNOME/libadwaita app that lists installed snaps and lets the user re
 - FOSS, privacy-first, security-first. No telemetry, no analytics, no network access from Ginger itself.
 - Ubuntu, GNOME, libadwaita 1.5 or newer, Wayland.
 - Flatpak, self-published on GitHub releases. `finish-args`: `--socket=wayland` and `--filesystem=/run/snapd.socket` only. Add nothing else unless a test proves it is required, and report it.
-- Stack: Python 3, PyGObject. Talk to snapd with `http.client` over the Unix socket (existing `snapd_client.py`). The `SNAPD_SOCKET` environment variable overrides the socket path; it is a test hook. Parse JSON with `json` only. Tests: stdlib `unittest`.
+- Stack: Python 3, PyGObject. Talk to snapd with `http.client` over the Unix socket (existing `snapd_client.py`). The `SNAPD_SOCKET` environment variable overrides the socket path; it and `GINGER_DATA_DIR` are test hooks, ignored inside the Flatpak (`/.flatpak-info` present). Parse JSON with `json` only. Tests: stdlib `unittest`.
 - No files written outside the app's own data dir. No subprocess or shell calls. Log nothing about snap or plug names beyond error kinds.
 - Treat all snapd text as untrusted. `Adw.ActionRow` and similar: `use_markup=False`. Where a widget always parses markup (`StatusPage` description, `PreferencesGroup` title), use `GLib.markup_escape_text`. Never put snapd text in a markup-parsed title; dialog headings that contain plug names are plain text.
 
